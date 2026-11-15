@@ -1,9 +1,12 @@
-// Boot and the one loop of Lumenfall. Input is read every frame; the world advances in fixed
-// 1/60 s steps (several in a slow frame, none in a fast one); the renderer paints the screen.
-// Screens: title -> play -> (upgrade choice between waves) -> paused / game over -> restart.
+// main.js — boot and the one game loop of Lumenfall. Input is read every frame; the world
+// advances in fixed 1/60 s steps (several in a slow frame, none in a fast one); the renderer
+// paints whichever screen is active. Screen flow:
+//   title -> play -> (upgrade choice between waves) -> paused / game over -> restart.
 //
-// ?seed=N fixes the wave pattern. ?shot=title|play|upgrade|end (&seed=N) stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady for a screenshot.
+// Two URL parameters drive testing:
+//   ?seed=N fixes the wave pattern (random seed for createRandom).
+//   ?shot=title|play|upgrade|end (&seed=N) stages that scene instead of running the loop,
+//   paints it twice and sets window.__shotReady for the screenshot harness.
 import { BEST_KEY, CORE, PALETTE, STEP } from "./config.js";
 import { createRandom } from "./random.js";
 import {
@@ -19,8 +22,10 @@ import {
 } from "./render.js";
 import { stageShot } from "./shots.js";
 
+// A frame never simulates more than a quarter second, so a stalled tab doesn't fast-forward.
 const MAX_FRAME = 0.25;
 
+// Read the URL once: the optional screenshot scene and the optional fixed seed.
 const params = new URLSearchParams(window.location.search);
 const shot = params.get("shot");
 const seedParam = Number.parseInt(params.get("seed") ?? "", 10);
@@ -32,6 +37,7 @@ const world = createWorld(createRandom(seed));
 const renderer = createRenderer(canvas);
 const audio = createAudio();
 
+// Read the persisted best score; 0 when storage is unavailable or empty.
 function readBest() {
   try {
     return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? "0", 10) || 0;
@@ -40,14 +46,18 @@ function readBest() {
   }
 }
 
+// Persist the best score; storage can be off (private windows), in which case
+// the best score then lasts this visit only.
 function saveBest(value) {
   try {
     window.localStorage.setItem(BEST_KEY, String(value));
   } catch {
-    // Storage can be off (private windows): the best score then lasts this visit only.
+    // Ignore: nothing to fall back to.
   }
 }
 
+// Screenshot mode: stage the named scene in the world, then paint it twice
+// (once to warm up shaders/layout, once as the real capture) and flag __shotReady.
 function runShot(name) {
   const scene = stageShot(name, world);
   let painted = 0;
@@ -60,6 +70,7 @@ function runShot(name) {
   requestAnimationFrame(paint);
 }
 
+// The normal game: owns the current screen, the input, and the fixed-step loop.
 function runGame() {
   const input = createInput(canvas);
   let screen = SCREEN_TITLE;
@@ -72,6 +83,7 @@ function runGame() {
     status.textContent = message;
   }
 
+  // Begin a fresh run: reset the world, switch to the play screen, and start wave ambience.
   function startGame() {
     world.reset();
     accumulator = 0;
@@ -82,6 +94,7 @@ function runGame() {
     announce(`Wave 1. ${world.state.lives} lives. Defend the lantern.`);
   }
 
+  // Lantern destroyed: show the game-over screen, record a new best if earned.
   function endGame() {
     screen = SCREEN_OVER;
     if (world.state.score > best) {
@@ -93,6 +106,7 @@ function runGame() {
     announce(`The lantern is out. Score ${world.state.score}. Best ${best}. Press space to relight.`);
   }
 
+  // React to the world's per-step event bitmask with sounds, screen changes, and narration.
   function handleEvents(events) {
     if (events & EVENT_SHOT_FIRED) audio.shot();
     if (events & EVENT_SHADE_SLAIN) audio.slain();
@@ -110,6 +124,7 @@ function runGame() {
     }
   }
 
+  // Apply the chosen between-wave blessing, then return to the play screen.
   function chooseUpgrade(index) {
     const offer = world.state.upgradesOffered?.[index];
     if (!offer) return;
@@ -120,6 +135,7 @@ function runGame() {
     announce(`${offer.title}: ${offer.detail}. Wave ${world.state.wave + 1} comes.`);
   }
 
+  // Consume queued input actions and route them by the current screen.
   function handleActions() {
     const actions = input.takeActions();
     if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
@@ -136,6 +152,7 @@ function runGame() {
     }
   }
 
+  // One fixed simulation step while playing: push input into the world, handle its events.
   function step() {
     const aim = input.aim();
     const dir = input.direction();
@@ -143,6 +160,7 @@ function runGame() {
     handleEvents(events);
   }
 
+  // The frame callback: drain the input, catch the simulation up in fixed steps, paint.
   function frame(now) {
     requestAnimationFrame(frame);
     accumulator += Math.min((now - last) / 1000, MAX_FRAME);
@@ -179,5 +197,6 @@ function runGame() {
   requestAnimationFrame(frame);
 }
 
+// Screenshot mode never runs the loop; normal boot does.
 if (shot) runShot(shot);
 else runGame();

@@ -1,17 +1,25 @@
-// All drawing: a single canvas, the fixed 1280x720 logical stage scaled to the window.
-// One draw(state, screen, best) call paints whichever screen is active: title, play,
-// paused, upgrade choice, or game over. Every shape is drawn in code - no image assets.
+// render.js — all drawing for Lumenfall: a single canvas, the fixed 1280x720 logical stage
+// scaled to whatever the window is. One draw(state, screen, best) call paints whichever
+// screen is active: title, play, paused, upgrade choice, or game over. Every shape is drawn
+// in code — no image assets.
 import { CORE, FIELD, FONT, PALETTE, PLAYER, SHADE, WAVE } from "./config.js";
 
+// Screen identifiers, shared with input.js and main.js.
 export const SCREEN_TITLE = "title";
 export const SCREEN_PLAY = "play";
 export const SCREEN_PAUSED = "paused";
 export const SCREEN_UPGRADE = "upgrade";
 export const SCREEN_OVER = "over";
 
+// Radius in stage pixels of a dropped ember pickup (declared early so drawEntities can use it).
+const EMBER_SIZE = 6;
+
+// Build the renderer bound to one canvas: resize handling, drawing primitives,
+// per-screen paint routines, and the public draw() frame entry point.
 export function createRenderer(canvas) {
   const ctx = canvas.getContext("2d");
 
+  // Match the canvas bitmap to the window at native device-pixel density.
   function fit() {
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.round(window.innerWidth * dpr);
@@ -20,7 +28,8 @@ export function createRenderer(canvas) {
   fit();
   window.addEventListener("resize", fit);
 
-  /** Round a rectangle's path (canvas lacks roundRect on older builds). */
+  // Rounded rectangle panel, filled and/or stroked. Hand-rolled because canvas
+  // lacked roundRect on older browser builds.
   function panel(x, y, w, h, radius, fill, stroke) {
     ctx.beginPath();
     ctx.moveTo(x + radius, y);
@@ -33,6 +42,7 @@ export function createRenderer(canvas) {
     if (stroke) { ctx.strokeStyle = stroke; ctx.stroke(); }
   }
 
+  // Draw one centred (by default) string at a size, colour, alignment and weight.
   function text(str, x, y, size, color, align, weight) {
     ctx.fillStyle = color;
     ctx.font = `${weight ?? 600} ${size}px ${FONT}`;
@@ -41,7 +51,8 @@ export function createRenderer(canvas) {
     ctx.fillText(str, x, y);
   }
 
-  /** The dark ground with its faint concentric wards around the core. */
+  // The dark ground with its faint concentric wards around the core, plus a soft
+  // radial glow behind the core.
   function drawGround(time) {
     ctx.fillStyle = PALETTE.night;
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
@@ -60,6 +71,7 @@ export function createRenderer(canvas) {
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
   }
 
+  // The lantern: a pulsing disc with a flame ring that turns red when the core was just hit.
   function drawCore(state, time) {
     const pulse = 1 + Math.sin(time * 2.4) * 0.05;
     const hurt = state.coreFlash > 0;
@@ -82,38 +94,43 @@ export function createRenderer(canvas) {
     ctx.fill();
   }
 
+  // The player wisp: aim line, body with direction nub, and the halo shield when bought.
+  // Skipped on alternate ticks while invulnerable, so the wisp blinks.
   function drawPlayer(state, time) {
-    const p = state.player;
-    const angle = Math.atan2(p.aimY - p.y, p.aimX - p.x);
+    const player = state.player;
+    const angle = Math.atan2(player.aimY - player.y, player.aimX - player.x);
     const blink = state.invulnerable > 0 && Math.floor(time * 12) % 2 === 0;
     if (blink) return;
     // Aim line.
     ctx.strokeStyle = "rgba(165, 243, 255, 0.25)";
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(p.x + Math.cos(angle) * 18, p.y + Math.sin(angle) * 18);
-    ctx.lineTo(p.x + Math.cos(angle) * 60, p.y + Math.sin(angle) * 60);
+    ctx.moveTo(player.x + Math.cos(angle) * 18, player.y + Math.sin(angle) * 18);
+    ctx.lineTo(player.x + Math.cos(angle) * 60, player.y + Math.sin(angle) * 60);
     ctx.stroke();
     // Body: a small wisp with a direction nub.
     ctx.fillStyle = PALETTE.player;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, PLAYER.radius, 0, Math.PI * 2);
+    ctx.arc(player.x, player.y, PLAYER.radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = "#ffffff";
     ctx.beginPath();
-    ctx.arc(p.x + Math.cos(angle) * 8, p.y + Math.sin(angle) * 8, 5, 0, Math.PI * 2);
+    ctx.arc(player.x + Math.cos(angle) * 8, player.y + Math.sin(angle) * 8, 5, 0, Math.PI * 2);
     ctx.fill();
     // Halo shield, when bought.
     if (state.stats.shield) {
       ctx.strokeStyle = "rgba(127, 227, 255, 0.5)";
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, PLAYER.radius + 9, 0, Math.PI * 2);
+      ctx.arc(player.x, player.y, PLAYER.radius + 9, 0, Math.PI * 2);
       ctx.stroke();
     }
   }
 
+  // Everything that lives on the field: dropped embers, spitter projectiles, player
+  // bolts, the shades, and the fading effect sprites. Painted behind the HUD.
   function drawEntities(state, time) {
+    // Dropped embers bob gently and fade out near the end of their lifetime.
     for (const ember of state.droppedEmbers) {
       const bob = Math.sin(time * 4 + ember.x) * 2;
       const fade = ember.age > 10 ? Math.max(0.2, 1 - (ember.age - 10) / 4) : 1;
@@ -124,12 +141,14 @@ export function createRenderer(canvas) {
       ctx.fill();
       ctx.globalAlpha = 1;
     }
+    // Spitter projectiles.
     for (const spit of state.spits) {
       ctx.fillStyle = PALETTE.spit;
       ctx.beginPath();
       ctx.arc(spit.x, spit.y, 6, 0, Math.PI * 2);
       ctx.fill();
     }
+    // Player bolts: short streaks pointing along their velocity.
     for (const shot of state.shots) {
       ctx.strokeStyle = PALETTE.bolt;
       ctx.lineWidth = 3;
@@ -138,9 +157,12 @@ export function createRenderer(canvas) {
       ctx.lineTo(shot.x - shot.vx * 0.02, shot.y - shot.vy * 0.02);
       ctx.stroke();
     }
+    // Shades: each kind has a silhouette — brutes are heavy hexagons, the rest are
+    // wobbling blobs (husks wobble hardest). All get two dark eyes facing the core
+    // and an hp bar once damaged.
     for (const shade of state.shades) {
       const spec = SHADE[shade.kind];
-      const r = spec.radius;
+      const radius = spec.radius;
       const color = shade.hitFlash > 0 ? "#ffffff" : PALETTE[spec.color];
       ctx.fillStyle = color;
       ctx.beginPath();
@@ -148,8 +170,8 @@ export function createRenderer(canvas) {
         // Brute: a heavy hexagon.
         for (let i = 0; i < 6; i += 1) {
           const a = (i / 6) * Math.PI * 2 + shade.x * 0.01;
-          const px = shade.x + Math.cos(a) * r;
-          const py = shade.y + Math.sin(a) * r;
+          const px = shade.x + Math.cos(a) * radius;
+          const py = shade.y + Math.sin(a) * radius;
           if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
         }
         ctx.closePath();
@@ -158,7 +180,7 @@ export function createRenderer(canvas) {
         const wobble = shade.kind === "husk" ? 0.22 : 0.12;
         for (let i = 0; i <= 10; i += 1) {
           const a = (i / 10) * Math.PI * 2;
-          const rr = r * (1 + Math.sin(a * 3 + time * 6 + shade.y * 0.02) * wobble);
+          const rr = radius * (1 + Math.sin(a * 3 + time * 6 + shade.y * 0.02) * wobble);
           const px = shade.x + Math.cos(a) * rr;
           const py = shade.y + Math.sin(a) * rr;
           if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
@@ -168,44 +190,48 @@ export function createRenderer(canvas) {
       ctx.fill();
       // Two dark eyes so each shade reads as a creature.
       ctx.fillStyle = "rgba(8, 6, 16, 0.85)";
-      const ea = Math.atan2(CORE.y - shade.y, CORE.x - shade.x);
+      const eyeAngle = Math.atan2(CORE.y - shade.y, CORE.x - shade.x);
       for (const side of [-1, 1]) {
         ctx.beginPath();
-        ctx.arc(shade.x + Math.cos(ea + side * 0.5) * r * 0.45, shade.y + Math.sin(ea + side * 0.5) * r * 0.45, r * 0.16, 0, Math.PI * 2);
+        ctx.arc(shade.x + Math.cos(eyeAngle + side * 0.5) * radius * 0.45, shade.y + Math.sin(eyeAngle + side * 0.5) * radius * 0.45, radius * 0.16, 0, Math.PI * 2);
         ctx.fill();
       }
       // Small hp bar for anything not full.
       if (shade.hp < shade.hpMax) {
         ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-        ctx.fillRect(shade.x - r, shade.y - r - 10, r * 2, 4);
+        ctx.fillRect(shade.x - radius, shade.y - radius - 10, radius * 2, 4);
         ctx.fillStyle = PALETTE.danger;
-        ctx.fillRect(shade.x - r, shade.y - r - 10, r * 2 * (shade.hp / shade.hpMax), 4);
+        ctx.fillRect(shade.x - radius, shade.y - radius - 10, radius * 2 * (shade.hp / shade.hpMax), 4);
       }
     }
+    // One-shot effects: expanding rings (burst / burnring) and shrinking dots (spark / muzzle),
+    // all fading to nothing over their lifetime.
     for (const fx of state.effects) {
-      const t = fx.age / fx.life;
-      ctx.globalAlpha = 1 - t;
+      const progress = fx.age / fx.life;
+      ctx.globalAlpha = 1 - progress;
       if (fx.kind === "burst" || fx.kind === "burnring") {
         ctx.strokeStyle = fx.color;
         ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.arc(fx.x, fx.y, 6 + t * (fx.kind === "burnring" ? 90 : 26), 0, Math.PI * 2);
+        ctx.arc(fx.x, fx.y, 6 + progress * (fx.kind === "burnring" ? 90 : 26), 0, Math.PI * 2);
         ctx.stroke();
       } else if (fx.kind === "spark") {
         ctx.fillStyle = fx.color;
         ctx.beginPath();
-        ctx.arc(fx.x, fx.y, 5 * (1 - t) + 1, 0, Math.PI * 2);
+        ctx.arc(fx.x, fx.y, 5 * (1 - progress) + 1, 0, Math.PI * 2);
         ctx.fill();
       } else if (fx.kind === "muzzle") {
         ctx.fillStyle = fx.color;
         ctx.beginPath();
-        ctx.arc(fx.x, fx.y, 7 * (1 - t), 0, Math.PI * 2);
+        ctx.arc(fx.x, fx.y, 7 * (1 - progress), 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
     }
   }
 
+  // The in-game HUD: top status panel, core health bar, key hints, wave announcement
+  // and remaining-shade count.
   function drawHud(state, time) {
     // Top bar: wave, score, embers, lives.
     panel(16, 16, 500, 66, 12, PALETTE.panel);
@@ -223,20 +249,22 @@ export function createRenderer(canvas) {
     // Mute hint.
     text("M: sound", FIELD.width - 24, 30, 13, PALETTE.muted, "right");
     text("P: pause", FIELD.width - 24, 52, 13, PALETTE.muted, "right");
-    // Wave announcement, mid-screen.
+    // Wave announcement, mid-screen, fading in over the first 0.6 s.
     if (state.announce > 0) {
       ctx.globalAlpha = Math.min(1, state.announce / 0.6);
       text(`WAVE ${state.wave}`, FIELD.width / 2, 190, 54, PALETTE.core, "center", 800);
       ctx.globalAlpha = 1;
     }
     // Wave progress: shades left this wave, under the top bar.
-    const left = state.aliveThisWave + state.toSpawn;
-    text(`${left} shade${left === 1 ? "" : "s"} remain`, 44, 96, 15, PALETTE.muted, "left");
+    const shadesRemaining = state.aliveThisWave + state.toSpawn;
+    text(`${shadesRemaining} shade${shadesRemaining === 1 ? "" : "s"} remain`, 44, 96, 15, PALETTE.muted, "left");
     text("hold click to fire", FIELD.width - 24, 74, 13, PALETTE.muted, "right");
-    // Ember purse.
+    // Ember purse lives in the top bar already; nothing extra is drawn here.
     if (time % 1 < 2) { /* purse shown top bar; nothing extra */ }
   }
 
+  // The between-wave overlay: cleared banner, the three blessing offers, and the
+  // countdown to the next wave.
   function drawUpgradeChoice(state) {
     ctx.fillStyle = "rgba(8, 6, 16, 0.72)";
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
@@ -244,6 +272,7 @@ export function createRenderer(canvas) {
     text("Choose a blessing for your light", FIELD.width / 2, 200, 20, PALETTE.text);
     const offers = state.upgradesOffered ?? [];
     for (let i = 0; i < offers.length; i += 1) {
+      // Three panels spread evenly around the horizontal centre.
       const x = FIELD.width / 2 + (i - 1) * 300;
       const y = 330;
       const w = 260; const h = 170;
@@ -257,6 +286,7 @@ export function createRenderer(canvas) {
     text(`Next wave in ${Math.ceil(state.intermission)}s`, FIELD.width / 2, 560, 16, PALETTE.muted);
   }
 
+  // The title screen: game name, story line, controls, pulsing start prompt, best score.
   function drawTitle(time, best) {
     ctx.fillStyle = "rgba(8, 6, 16, 0.55)";
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
@@ -271,6 +301,8 @@ export function createRenderer(canvas) {
     text("Defend the lantern. Gather embers. Choose your blessings between waves.", FIELD.width / 2, 640, 15, PALETTE.muted);
   }
 
+  // The game-over screen: red vignette, final score, run summary rows, best-score
+  // shine, and the restart prompt.
   function drawOver(state, best) {
     ctx.fillStyle = "rgba(8, 6, 16, 0.85)";
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
@@ -290,16 +322,17 @@ export function createRenderer(canvas) {
     ctx.lineTo(FIELD.width / 2 + 180, 300);
     ctx.stroke();
     // Run summary as aligned label/value rows.
-    const rows = [
+    const summaryRows = [
       ["Waves survived", Math.max(0, state.wave - 1)],
       ["Embers gathered", state.embers],
       ["Blessings taken", state.upgradeCount],
     ];
-    rows.forEach(([label, value], i) => {
+    summaryRows.forEach(([label, value], i) => {
       const y = 340 + i * 34;
       text(label, FIELD.width / 2 - 130, y, 18, PALETTE.muted, "left");
       text(String(value), FIELD.width / 2 + 130, y, 18, PALETTE.text, "right", 700);
     });
+    // Shine the "new best" banner, or show the standing best otherwise.
     if (state.score >= best && state.score > 0) {
       const shine = 0.7 + Math.sin(performance.now() / 220) * 0.3;
       ctx.globalAlpha = shine;
@@ -313,12 +346,13 @@ export function createRenderer(canvas) {
     ctx.globalAlpha = 1;
   }
 
-  const EMBER_SIZE = 6;
-
+  // Clock used for every animation phase; advanced one fixed step per draw call.
   let clock = 0;
 
   return {
-    /** Paint one frame of the named screen. */
+    // Paint one frame of the named screen. Scales the 1280x720 stage to the window,
+    // letterboxes it, applies screen shake, clips to the stage, then layers the
+    // scene (ground, core, entities) and the screen-specific overlay on top.
     draw(state, screen, best) {
       const dpr = window.devicePixelRatio || 1;
       const scale = Math.min(canvas.width / FIELD.width, canvas.height / FIELD.height) / dpr;
@@ -330,7 +364,7 @@ export function createRenderer(canvas) {
       ctx.fillStyle = PALETTE.night;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.save();
-      // Screen shake during hits.
+      // Screen shake during hits: a small random offset scaled by the remaining shake.
       const shake = state.shake > 0 ? state.shake : 0;
       ctx.translate((offX + (Math.random() - 0.5) * shake) * dpr, (offY + (Math.random() - 0.5) * shake) * dpr);
       ctx.scale(scale * dpr, scale * dpr);
@@ -338,9 +372,12 @@ export function createRenderer(canvas) {
       ctx.rect(0, 0, FIELD.width, FIELD.height);
       ctx.clip();
 
+      // The always-present scene layers.
       drawGround(clock);
       drawCore(state, clock);
       drawEntities(state, clock);
+
+      // Screen-specific layers on top.
       if (screen === SCREEN_PLAY || screen === SCREEN_PAUSED || screen === SCREEN_UPGRADE) {
         drawPlayer(state, clock);
         drawHud(state, clock);

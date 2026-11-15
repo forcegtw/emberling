@@ -1,13 +1,17 @@
-// All sound is synthesised with WebAudio: no files, no network. Each effect is a short
-// oscillator/noise envelope; the ambience is a slow low drone that swells during waves.
+// audio.js — every sound in Lumenfall, synthesised at runtime with the WebAudio API.
+// No audio files and no network: each effect is a short oscillator or filtered-noise
+// envelope; the ambience is a slow low drone that swells during waves.
 // An AudioContext can only start after a user gesture, so unlock() is called on first input.
 export function createAudio() {
+  // Lazily created WebAudio pieces; all null until the first unlock().
   let ctx = null;
   let master = null;
   let droneOsc = null;
   let droneGain = null;
   let muted = false;
 
+  // Create the AudioContext, master volume and ambient drone on first use.
+  // Returns false when the browser has no WebAudio at all.
   function ensure() {
     if (ctx) return true;
     const AC = window.AudioContext ?? window.webkitAudioContext;
@@ -28,13 +32,13 @@ export function createAudio() {
     return true;
   }
 
-  /** Call on the first user gesture; browsers block audio before one. */
+  // Call on the first user gesture; browsers block audio before one.
   function unlock() {
     if (!ensure()) return;
     if (ctx.state === "suspended") ctx.resume();
   }
 
-  /** A short tone with an exponential decay envelope. */
+  // A short tone with an exponential decay envelope, optionally gliding to freqEnd.
   function tone(type, freq, seconds, volume, freqEnd) {
     if (!ctx || muted) return;
     const t = ctx.currentTime;
@@ -51,7 +55,7 @@ export function createAudio() {
     osc.stop(t + seconds + 0.02);
   }
 
-  /** A short filtered-noise burst, for hits and bursts. */
+  // A short lowpass-filtered white-noise burst (its own decay), for hits and bursts.
   function noise(seconds, volume, cutoff) {
     if (!ctx || muted) return;
     const t = ctx.currentTime;
@@ -70,6 +74,7 @@ export function createAudio() {
     src.start(t);
   }
 
+  // The public sound-effect API, called by main.js in response to world events.
   return {
     unlock,
     toggleMute() {
@@ -86,6 +91,7 @@ export function createAudio() {
     waveClear() { tone("sine", 660, 0.3, 0.16); tone("sine", 880, 0.4, 0.14, 1100); },
     upgrade() { tone("sine", 520, 0.18, 0.16); tone("sine", 780, 0.22, 0.14, 900); },
     gameOver() { tone("sawtooth", 220, 1.2, 0.25, 60); },
+    // Raise or lower the ambient drone; level is the target gain, reached smoothly.
     drone(level) {
       if (droneGain) droneGain.gain.setTargetAtTime(level, ctx.currentTime, 0.5);
     },
