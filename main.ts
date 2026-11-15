@@ -12,7 +12,7 @@
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
@@ -20,10 +20,42 @@ import { buildDossier } from './vendor/makefun-game.ts';
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
+function countFiles(dir: string): { files: number; bytes: number } {
+  let files = 0;
+  let bytes = 0;
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    const st = statSync(p);
+    if (st.isDirectory()) {
+      const sub = countFiles(p);
+      files += sub.files;
+      bytes += sub.bytes;
+    } else {
+      files += 1;
+      bytes += st.size;
+    }
+  }
+  return { files, bytes };
+}
+
+const shotsDir = join(here, 'screenshots');
+if (!existsSync(shotsDir)) {
+  console.error(`ERROR: missing screenshots/ directory at ${shotsDir}`);
+  console.error('Add 3-4 PNG/JPEG screenshots there (first by name becomes the cover), then rerun.');
+  process.exit(1);
+}
+
 mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
+
+const gameSrc = join(here, 'game');
+const gameStats = countFiles(gameSrc);
+console.error(`Copying game/: ${gameStats.files} files, ${gameStats.bytes} bytes -> ${join(out, 'game')}`);
+cpSync(gameSrc, join(out, 'game'), { recursive: true });
+
+const shotStats = countFiles(shotsDir);
+console.error(`Copying screenshots/: ${shotStats.files} files, ${shotStats.bytes} bytes -> ${join(out, 'screenshots')}`);
 mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+cpSync(shotsDir, join(out, 'screenshots'), { recursive: true });
 
 // The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
 // scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
@@ -39,3 +71,4 @@ writeFileSync(
     game_path_max_bytes: 1000,
   }),
 );
+console.error(`Dossier written for Block Dodger: game/ ${gameStats.files} files / ${gameStats.bytes} bytes, screenshots/ ${shotStats.files} files -> ${join(out, 'dossier.json')}`);
