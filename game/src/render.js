@@ -1,397 +1,247 @@
-// render.js — all drawing for Lumenfall: a single canvas, the fixed 1280x720 logical stage
-// scaled to whatever the window is. One draw(state, screen, best) call paints whichever
-// screen is active: title, play, paused, upgrade choice, or game over. Every shape is drawn
-// in code — no image assets.
-import { CORE, FIELD, FONT, PALETTE, PLAYER, SHADE, WAVE } from "./config.js";
+// Emberling — the renderer. Everything is drawn in code on one canvas: arena, entities, HUD, menus.
 
-// Screen identifiers, shared with input.js and main.js.
-export const SCREEN_TITLE = "title";
-export const SCREEN_PLAY = "play";
-export const SCREEN_PAUSED = "paused";
-export const SCREEN_UPGRADE = "upgrade";
-export const SCREEN_OVER = "over";
+import { W, H, ARENA, PALETTE as C } from './config.js';
 
-// Radius in stage pixels of a dropped ember pickup (declared early so drawEntities can use it).
-const EMBER_SIZE = 6;
+function drawArena(ctx, time) {
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
 
-// Build the renderer bound to one canvas: resize handling, drawing primitives,
-// per-screen paint routines, and the public draw() frame entry point.
-export function createRenderer(canvas) {
-  const ctx = canvas.getContext("2d");
+  // slow-scrolling frost grid
+  ctx.strokeStyle = C.bgGrid;
+  ctx.lineWidth = 1;
+  const step = 64;
+  const off = (time * 8) % step;
+  ctx.beginPath();
+  for (let x = -step + off; x <= W; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+  for (let y = -step + off; y <= H; y += step) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+  ctx.stroke();
 
-  // Match the canvas bitmap to the window at native device-pixel density.
-  function fit() {
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(window.innerWidth * dpr);
-    canvas.height = Math.round(window.innerHeight * dpr);
+  // arena border
+  ctx.strokeStyle = C.arenaEdge;
+  ctx.lineWidth = 4;
+  ctx.strokeRect(ARENA.pad, ARENA.pad, ARENA.w - ARENA.pad * 2, ARENA.h - ARENA.pad * 2);
+}
+
+function drawPlayer(ctx, p) {
+  const blink = p.invuln > 0 && Math.floor(p.invuln * 12) % 2 === 0;
+  if (blink) return;
+  const flick = Math.sin(p.flame) * 2;
+  // aura
+  ctx.fillStyle = 'rgba(255,157,60,0.18)';
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 26 + flick, 0, Math.PI * 2);
+  ctx.fill();
+  // outer flame
+  ctx.fillStyle = C.ember;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, p.radius() + 3 + flick, 0, Math.PI * 2);
+  ctx.fill();
+  // core
+  ctx.fillStyle = C.emberCore;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, p.radius() - 4, 0, Math.PI * 2);
+  ctx.fill();
+  // eyes
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(p.x - 5, p.y - 3, 3, 5);
+  ctx.fillRect(p.x + 2, p.y - 3, 3, 5);
+}
+
+function drawWisp(ctx, w) {
+  const pale = w.hp / w.maxHp;
+  ctx.fillStyle = w.kind === 'brute' ? C.frostDeep : w.kind === 'dart' ? C.shard : C.frost;
+  ctx.globalAlpha = 0.55 + 0.45 * pale;
+  // spiky frost body
+  ctx.beginPath();
+  const spikes = w.kind === 'brute' ? 8 : 6;
+  for (let i = 0; i <= spikes; i++) {
+    const a = (i / spikes) * Math.PI * 2 + w.wobble;
+    const r = i % 2 === 0 ? w.r : w.r * 0.62;
+    const px = w.x + Math.cos(a) * r, py = w.y + Math.sin(a) * r;
+    i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
   }
-  fit();
-  window.addEventListener("resize", fit);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  // cold eye
+  ctx.fillStyle = '#eafcff';
+  ctx.beginPath();
+  ctx.arc(w.x, w.y, 2.5, 0, Math.PI * 2);
+  ctx.fill();
 
-  // Rounded rectangle panel, filled and/or stroked. Hand-rolled because canvas
-  // lacked roundRect on older browser builds.
-  function panel(x, y, w, h, radius, fill, stroke) {
+  if (w.maxHp > 1 && w.hp < w.maxHp) {
+    ctx.fillStyle = C.danger;
+    ctx.fillRect(w.x - w.r, w.y - w.r - 8, w.r * 2 * pale, 3);
+  }
+}
+
+function drawBullet(ctx, b) {
+  ctx.fillStyle = C.emberCore;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = C.ember;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r + 3, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function drawAimLine(ctx, player, mouse) {
+  const dx = mouse.x - player.x, dy = mouse.y - player.y;
+  const d = Math.hypot(dx, dy) || 1;
+  ctx.strokeStyle = 'rgba(255,157,60,0.25)';
+  ctx.setLineDash([6, 10]);
+  ctx.beginPath();
+  ctx.moveTo(player.x + (dx / d) * 22, player.y + (dy / d) * 22);
+  ctx.lineTo(player.x + (dx / d) * 120, player.y + (dy / d) * 120);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // reticle at the cursor
+  ctx.strokeStyle = 'rgba(255,233,176,0.8)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(mouse.x, mouse.y, 9, 0, Math.PI * 2);
+  ctx.moveTo(mouse.x - 14, mouse.y);
+  ctx.lineTo(mouse.x - 5, mouse.y);
+  ctx.moveTo(mouse.x + 5, mouse.y);
+  ctx.lineTo(mouse.x + 14, mouse.y);
+  ctx.stroke();
+}
+
+function drawWaveBanner(ctx, game) {
+  if (game.bannerTimer <= 0) return;
+  const a = Math.min(1, game.bannerTimer / 0.4);
+  ctx.globalAlpha = a;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = C.frost;
+  ctx.font = 'bold 40px system-ui, sans-serif';
+  ctx.fillText(`WAVE ${game.wave}`, W / 2, 150);
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+}
+
+function drawHUD(ctx, game) {
+  const { player, wave, score, combo, enemiesLeft } = game;
+  ctx.font = 'bold 20px system-ui, sans-serif';
+  ctx.fillStyle = C.text;
+  ctx.textAlign = 'left';
+  ctx.fillText(`WAVE ${wave}`, 32, 40);
+  ctx.fillText(`SCORE ${score}`, 32, 68);
+
+  ctx.textAlign = 'right';
+  ctx.fillText(`WISPS ${enemiesLeft}`, W - 32, 40);
+  if (combo > 1) {
+    ctx.fillStyle = C.ember;
+    ctx.fillText(`COMBO x${combo}`, W - 32, 68);
+  }
+
+  // health as flame hearts
+  ctx.textAlign = 'left';
+  for (let i = 0; i < 5; i++) {
+    const hx = W / 2 - 62 + i * 26;
     ctx.beginPath();
-    ctx.moveTo(x + radius, y);
-    ctx.arcTo(x + w, y, x + w, y + h, radius);
-    ctx.arcTo(x + w, y + h, x, y + h, radius);
-    ctx.arcTo(x, y + h, x, y, radius);
-    ctx.arcTo(x, y, x + w, y, radius);
-    ctx.closePath();
-    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
-    if (stroke) { ctx.strokeStyle = stroke; ctx.stroke(); }
-  }
-
-  // Draw one centred (by default) string at a size, colour, alignment and weight.
-  function text(str, x, y, size, color, align, weight) {
-    ctx.fillStyle = color;
-    ctx.font = `${weight ?? 600} ${size}px ${FONT}`;
-    ctx.textAlign = align ?? "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(str, x, y);
-  }
-
-  // The dark ground with its faint concentric wards around the core, plus a soft
-  // radial glow behind the core.
-  function drawGround(time) {
-    ctx.fillStyle = PALETTE.night;
-    ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-    ctx.strokeStyle = PALETTE.grid;
-    ctx.lineWidth = 1;
-    for (let r = 60; r <= 600; r += 60) {
-      ctx.beginPath();
-      ctx.arc(CORE.x, CORE.y, r + Math.sin(time * 0.8 + r) * 2, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    // Soft radial glow behind the core.
-    const glow = ctx.createRadialGradient(CORE.x, CORE.y, 10, CORE.x, CORE.y, 260);
-    glow.addColorStop(0, "rgba(255, 200, 110, 0.16)");
-    glow.addColorStop(1, "rgba(255, 200, 110, 0)");
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-  }
-
-  // The lantern: a pulsing disc with a flame ring that turns red when the core was just hit.
-  function drawCore(state, time) {
-    const pulse = 1 + Math.sin(time * 2.4) * 0.05;
-    const hurt = state.coreFlash > 0;
-    // Outer flame ring.
-    ctx.strokeStyle = hurt ? PALETTE.danger : PALETTE.coreGlow;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(CORE.x, CORE.y, CORE.radius + 10 + Math.sin(time * 5) * 2, 0, Math.PI * 2);
-    ctx.stroke();
-    // Lantern body.
-    ctx.fillStyle = hurt ? "#ff9a7a" : PALETTE.core;
-    ctx.beginPath();
-    ctx.arc(CORE.x, CORE.y, CORE.radius * pulse, 0, Math.PI * 2);
+    const filled = i < player.hp;
+    ctx.fillStyle = filled ? C.ember : '#2a2130';
+    // little flame shape
+    ctx.moveTo(hx, 28);
+    ctx.quadraticCurveTo(hx - 8, 40, hx, 52);
+    ctx.quadraticCurveTo(hx + 8, 40, hx, 28);
     ctx.fill();
-    // The flame inside.
-    ctx.fillStyle = "#fff6dc";
-    ctx.beginPath();
-    const flicker = Math.sin(time * 9) * 3;
-    ctx.ellipse(CORE.x, CORE.y - 4 + flicker, 8, 13, 0, 0, Math.PI * 2);
-    ctx.fill();
   }
+}
 
-  // The player wisp: aim line, body with direction nub, and the halo shield when bought.
-  // Skipped on alternate ticks while invulnerable, so the wisp blinks.
-  function drawPlayer(state, time) {
-    const player = state.player;
-    const angle = Math.atan2(player.aimY - player.y, player.aimX - player.x);
-    const blink = state.invulnerable > 0 && Math.floor(time * 12) % 2 === 0;
-    if (blink) return;
-    // Aim line.
-    ctx.strokeStyle = "rgba(165, 243, 255, 0.25)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(player.x + Math.cos(angle) * 18, player.y + Math.sin(angle) * 18);
-    ctx.lineTo(player.x + Math.cos(angle) * 60, player.y + Math.sin(angle) * 60);
-    ctx.stroke();
-    // Body: a small wisp with a direction nub.
-    ctx.fillStyle = PALETTE.player;
-    ctx.beginPath();
-    ctx.arc(player.x, player.y, PLAYER.radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#ffffff";
-    ctx.beginPath();
-    ctx.arc(player.x + Math.cos(angle) * 8, player.y + Math.sin(angle) * 8, 5, 0, Math.PI * 2);
-    ctx.fill();
-    // Halo shield, when bought.
-    if (state.stats.shield) {
-      ctx.strokeStyle = "rgba(127, 227, 255, 0.5)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(player.x, player.y, PLAYER.radius + 9, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
+function drawTitle(ctx, time) {
+  ctx.fillStyle = 'rgba(10,14,26,0.75)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = C.ember;
+  ctx.font = 'bold 84px system-ui, sans-serif';
+  const wob = Math.sin(time * 2) * 4;
+  ctx.fillText('EMBERLING', W / 2, 240 + wob);
+  ctx.fillStyle = C.frost;
+  ctx.font = '26px system-ui, sans-serif';
+  ctx.fillText('a flame against the frost', W / 2, 290);
+  ctx.fillStyle = C.text;
+  ctx.font = '20px system-ui, sans-serif';
+  ctx.fillText('WASD / arrows — move      Mouse — aim      Hold click — shoot', W / 2, 420);
+  ctx.fillText('Survive the waves. Between waves, choose one of three blessings.', W / 2, 456);
+  ctx.fillStyle = Math.sin(time * 4) > 0 ? C.emberCore : C.dim;
+  ctx.font = 'bold 28px system-ui, sans-serif';
+  ctx.fillText('Press SPACE or click to begin', W / 2, 560);
+  ctx.textAlign = 'left';
+}
 
-  // Everything that lives on the field: dropped embers, spitter projectiles, player
-  // bolts, the shades, and the fading effect sprites. Painted behind the HUD.
-  function drawEntities(state, time) {
-    // Dropped embers bob gently and fade out near the end of their lifetime.
-    for (const ember of state.droppedEmbers) {
-      const bob = Math.sin(time * 4 + ember.x) * 2;
-      const fade = ember.age > 10 ? Math.max(0.2, 1 - (ember.age - 10) / 4) : 1;
-      ctx.globalAlpha = fade;
-      ctx.fillStyle = PALETTE.ember;
-      ctx.beginPath();
-      ctx.arc(ember.x, ember.y + bob, EMBER_SIZE, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-    // Spitter projectiles.
-    for (const spit of state.spits) {
-      ctx.fillStyle = PALETTE.spit;
-      ctx.beginPath();
-      ctx.arc(spit.x, spit.y, 6, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // Player bolts: short streaks pointing along their velocity.
-    for (const shot of state.shots) {
-      ctx.strokeStyle = PALETTE.bolt;
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(shot.x, shot.y);
-      ctx.lineTo(shot.x - shot.vx * 0.02, shot.y - shot.vy * 0.02);
-      ctx.stroke();
-    }
-    // Shades: each kind has a silhouette — brutes are heavy hexagons, the rest are
-    // wobbling blobs (husks wobble hardest). All get two dark eyes facing the core
-    // and an hp bar once damaged.
-    for (const shade of state.shades) {
-      const spec = SHADE[shade.kind];
-      const radius = spec.radius;
-      const color = shade.hitFlash > 0 ? "#ffffff" : PALETTE[spec.color];
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      if (shade.kind === "brute") {
-        // Brute: a heavy hexagon.
-        for (let i = 0; i < 6; i += 1) {
-          const a = (i / 6) * Math.PI * 2 + shade.x * 0.01;
-          const px = shade.x + Math.cos(a) * radius;
-          const py = shade.y + Math.sin(a) * radius;
-          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-      } else {
-        // Others: a wobbling blob.
-        const wobble = shade.kind === "husk" ? 0.22 : 0.12;
-        for (let i = 0; i <= 10; i += 1) {
-          const a = (i / 10) * Math.PI * 2;
-          const rr = radius * (1 + Math.sin(a * 3 + time * 6 + shade.y * 0.02) * wobble);
-          const px = shade.x + Math.cos(a) * rr;
-          const py = shade.y + Math.sin(a) * rr;
-          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-      }
-      ctx.fill();
-      // Two dark eyes so each shade reads as a creature.
-      ctx.fillStyle = "rgba(8, 6, 16, 0.85)";
-      const eyeAngle = Math.atan2(CORE.y - shade.y, CORE.x - shade.x);
-      for (const side of [-1, 1]) {
-        ctx.beginPath();
-        ctx.arc(shade.x + Math.cos(eyeAngle + side * 0.5) * radius * 0.45, shade.y + Math.sin(eyeAngle + side * 0.5) * radius * 0.45, radius * 0.16, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      // Small hp bar for anything not full.
-      if (shade.hp < shade.hpMax) {
-        ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-        ctx.fillRect(shade.x - radius, shade.y - radius - 10, radius * 2, 4);
-        ctx.fillStyle = PALETTE.danger;
-        ctx.fillRect(shade.x - radius, shade.y - radius - 10, radius * 2 * (shade.hp / shade.hpMax), 4);
-      }
-    }
-    // One-shot effects: expanding rings (burst / burnring) and shrinking dots (spark / muzzle),
-    // all fading to nothing over their lifetime.
-    for (const fx of state.effects) {
-      const progress = fx.age / fx.life;
-      ctx.globalAlpha = 1 - progress;
-      if (fx.kind === "burst" || fx.kind === "burnring") {
-        ctx.strokeStyle = fx.color;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(fx.x, fx.y, 6 + progress * (fx.kind === "burnring" ? 90 : 26), 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (fx.kind === "spark") {
-        ctx.fillStyle = fx.color;
-        ctx.beginPath();
-        ctx.arc(fx.x, fx.y, 5 * (1 - progress) + 1, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (fx.kind === "muzzle") {
-        ctx.fillStyle = fx.color;
-        ctx.beginPath();
-        ctx.arc(fx.x, fx.y, 7 * (1 - progress), 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-    }
-  }
+function drawUpgradeChoice(ctx, offers, time) {
+  ctx.fillStyle = 'rgba(10,14,26,0.82)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = C.emberCore;
+  ctx.font = 'bold 44px system-ui, sans-serif';
+  ctx.fillText('Wave cleared — choose a blessing', W / 2, 200);
 
-  // The in-game HUD: top status panel, core health bar, key hints, wave announcement
-  // and remaining-shade count.
-  function drawHud(state, time) {
-    // Top bar: wave, score, embers, lives.
-    panel(16, 16, 500, 66, 12, PALETTE.panel);
-    text(`WAVE ${state.wave}`, 44, 38, 20, PALETTE.core, "left", 800);
-    text(`${state.score}`, 44, 62, 17, PALETTE.text, "left", 700);
-    text(`◆ ${state.embers}`, 230, 38, 18, PALETTE.ember, "left", 700);
-    text(`✦ ${state.lives} lives`, 230, 62, 16, PALETTE.player, "left", 600);
-    // Core health bar.
-    text("LANTERN", 330, 34, 13, PALETTE.muted, "left");
-    ctx.fillStyle = "rgba(0,0,0,0.45)";
-    ctx.fillRect(330, 44, 150, 12);
-    const hpFrac = state.coreHp / CORE.hpMax;
-    ctx.fillStyle = hpFrac > 0.35 ? PALETTE.core : PALETTE.danger;
-    ctx.fillRect(330, 44, 150 * hpFrac, 12);
-    // Mute hint.
-    text("M: sound", FIELD.width - 24, 30, 13, PALETTE.muted, "right");
-    text("P: pause", FIELD.width - 24, 52, 13, PALETTE.muted, "right");
-    // Wave announcement, mid-screen, fading in over the first 0.6 s.
-    if (state.announce > 0) {
-      ctx.globalAlpha = Math.min(1, state.announce / 0.6);
-      text(`WAVE ${state.wave}`, FIELD.width / 2, 190, 54, PALETTE.core, "center", 800);
-      ctx.globalAlpha = 1;
-    }
-    // Wave progress: shades left this wave, under the top bar.
-    const shadesRemaining = state.aliveThisWave + state.toSpawn;
-    text(`${shadesRemaining} shade${shadesRemaining === 1 ? "" : "s"} remain`, 44, 96, 15, PALETTE.muted, "left");
-    text("hold click to fire", FIELD.width - 24, 74, 13, PALETTE.muted, "right");
-    // Ember purse lives in the top bar already; nothing extra is drawn here.
-    if (time % 1 < 2) { /* purse shown top bar; nothing extra */ }
-  }
+  const cw = 300, ch = 220, gap = 40;
+  const x0 = W / 2 - (cw * 3 + gap * 2) / 2;
+  offers.forEach((u, i) => {
+    const x = x0 + i * (cw + gap);
+    const y = 270;
+    const hover = Math.sin(time * 3 + i) * 3;
+    ctx.fillStyle = '#141b30';
+    ctx.strokeStyle = C.ember;
+    ctx.lineWidth = 3;
+    ctx.fillRect(x, y + hover, cw, ch);
+    ctx.strokeRect(x, y + hover, cw, ch);
+    ctx.fillStyle = C.dim;
+    ctx.font = 'bold 30px system-ui, sans-serif';
+    ctx.fillText(String(i + 1), x + cw / 2, y + hover + 44);
+    ctx.fillStyle = C.ember;
+    ctx.font = 'bold 26px system-ui, sans-serif';
+    ctx.fillText(u.name, x + cw / 2, y + hover + 100);
+    ctx.fillStyle = C.text;
+    ctx.font = '18px system-ui, sans-serif';
+    ctx.fillText(u.desc, x + cw / 2, y + hover + 140);
+  });
+  ctx.fillStyle = C.dim;
+  ctx.font = '18px system-ui, sans-serif';
+  ctx.fillText('Press 1, 2 or 3', W / 2, 560);
+  ctx.textAlign = 'left';
+}
 
-  // The between-wave overlay: cleared banner, the three blessing offers, and the
-  // countdown to the next wave.
-  function drawUpgradeChoice(state) {
-    ctx.fillStyle = "rgba(8, 6, 16, 0.72)";
-    ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-    text(`WAVE ${state.wave} CLEARED`, FIELD.width / 2, 150, 44, PALETTE.core, "center", 800);
-    text("Choose a blessing for your light", FIELD.width / 2, 200, 20, PALETTE.text);
-    const offers = state.upgradesOffered ?? [];
-    for (let i = 0; i < offers.length; i += 1) {
-      // Three panels spread evenly around the horizontal centre.
-      const x = FIELD.width / 2 + (i - 1) * 300;
-      const y = 330;
-      const w = 260; const h = 170;
-      const hovered = false;
-      panel(x - w / 2, y - h / 2, w, h, 14, PALETTE.panel, PALETTE.grid);
-      text(`${i + 1}`, x, y - 58, 15, PALETTE.muted, "center", 700);
-      text(offers[i].title, x, y - 22, 24, PALETTE.player, "center", 800);
-      text(offers[i].detail, x, y + 22, 16, PALETTE.text);
-      text(`press ${i + 1}`, x, y + 60, 13, PALETTE.muted);
-    }
-    text(`Next wave in ${Math.ceil(state.intermission)}s`, FIELD.width / 2, 560, 16, PALETTE.muted);
-  }
+function drawEnd(ctx, game) {
+  ctx.fillStyle = 'rgba(10,14,26,0.85)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = C.danger;
+  ctx.font = 'bold 72px system-ui, sans-serif';
+  ctx.fillText('THE FLAME FADES', W / 2, 260);
+  ctx.fillStyle = C.text;
+  ctx.font = '30px system-ui, sans-serif';
+  ctx.fillText(`You fell on wave ${game.wave} with ${game.score} points`, W / 2, 340);
+  ctx.fillText(`Best run: ${game.bestScore} points`, W / 2, 386);
+  ctx.fillStyle = Math.sin(game.time * 4) > 0 ? C.emberCore : C.dim;
+  ctx.font = 'bold 26px system-ui, sans-serif';
+  ctx.fillText('Press SPACE or click to rekindle', W / 2, 500);
+  ctx.textAlign = 'left';
+}
 
-  // The title screen: game name, story line, controls, pulsing start prompt, best score.
-  function drawTitle(time, best) {
-    ctx.fillStyle = "rgba(8, 6, 16, 0.55)";
-    ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-    text("LUMENFALL", FIELD.width / 2, 200, 84, PALETTE.core, "center", 800);
-    text("The shades come for the last lantern. Keep it burning.", FIELD.width / 2, 268, 20, PALETTE.text);
-    text("WASD / arrows  move      Mouse  aim      Hold click / W  fire", FIELD.width / 2, 330, 17, PALETTE.muted);
-    const pulse = 0.7 + Math.sin(time * 3) * 0.3;
-    ctx.globalAlpha = pulse;
-    text("CLICK OR PRESS SPACE TO BEGIN", FIELD.width / 2, 420, 24, PALETTE.player, "center", 800);
-    ctx.globalAlpha = 1;
-    if (best > 0) text(`Best score: ${best}`, FIELD.width / 2, 480, 18, PALETTE.ember);
-    text("Defend the lantern. Gather embers. Choose your blessings between waves.", FIELD.width / 2, 640, 15, PALETTE.muted);
-  }
+export function render(ctx, game) {
+  ctx.save();
+  const sh = game.shake.offset();
+  ctx.translate(sh.x, sh.y);
+  drawArena(ctx, game.time);
 
-  // The game-over screen: red vignette, final score, run summary rows, best-score
-  // shine, and the restart prompt.
-  function drawOver(state, best) {
-    ctx.fillStyle = "rgba(8, 6, 16, 0.85)";
-    ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-    // Fading red vignette to sell the "light went out" moment.
-    const fade = ctx.createRadialGradient(FIELD.width / 2, 240, 60, FIELD.width / 2, 240, 560);
-    fade.addColorStop(0, "rgba(224, 90, 90, 0.18)");
-    fade.addColorStop(1, "rgba(224, 90, 90, 0)");
-    ctx.fillStyle = fade;
-    ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-    text("THE LANTERN IS OUT", FIELD.width / 2, 170, 56, PALETTE.danger, "center", 800);
-    // Score is the hero number, framed by a hairline rule.
-    text(`Score  ${state.score}`, FIELD.width / 2, 260, 44, PALETTE.core, "center", 800);
-    ctx.strokeStyle = PALETTE.grid;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(FIELD.width / 2 - 180, 300);
-    ctx.lineTo(FIELD.width / 2 + 180, 300);
-    ctx.stroke();
-    // Run summary as aligned label/value rows.
-    const summaryRows = [
-      ["Waves survived", Math.max(0, state.wave - 1)],
-      ["Embers gathered", state.embers],
-      ["Blessings taken", state.upgradeCount],
-    ];
-    summaryRows.forEach(([label, value], i) => {
-      const y = 340 + i * 34;
-      text(label, FIELD.width / 2 - 130, y, 18, PALETTE.muted, "left");
-      text(String(value), FIELD.width / 2 + 130, y, 18, PALETTE.text, "right", 700);
-    });
-    // Shine the "new best" banner, or show the standing best otherwise.
-    if (state.score >= best && state.score > 0) {
-      const shine = 0.7 + Math.sin(performance.now() / 220) * 0.3;
-      ctx.globalAlpha = shine;
-      text("★ NEW BEST ★", FIELD.width / 2, 478, 26, PALETTE.ember, "center", 800);
-      ctx.globalAlpha = 1;
-    } else {
-      text(`Best  ${best}`, FIELD.width / 2, 478, 20, PALETTE.ember);
-    }
-    ctx.globalAlpha = 0.7 + Math.sin(performance.now() / 300) * 0.3;
-    text("CLICK OR PRESS SPACE TO RELIGHT THE LANTERN", FIELD.width / 2, 540, 22, PALETTE.player, "center", 800);
-    ctx.globalAlpha = 1;
-  }
+  drawAimLine(ctx, game.player, game.mouse);
+  for (const b of game.bullets) drawBullet(ctx, b);
+  for (const w of game.wisps) drawWisp(ctx, w);
+  drawPlayer(ctx, game.player);
+  game.particles.draw(ctx);
+  game.texts.draw(ctx);
+  ctx.restore();
 
-  // Clock used for every animation phase; advanced one fixed step per draw call.
-  let clock = 0;
+  drawHUD(ctx, game);
+  drawWaveBanner(ctx, game);
 
-  return {
-    // Paint one frame of the named screen. Scales the 1280x720 stage to the window,
-    // letterboxes it, applies screen shake, clips to the stage, then layers the
-    // scene (ground, core, entities) and the screen-specific overlay on top.
-    draw(state, screen, best) {
-      const dpr = window.devicePixelRatio || 1;
-      const scale = Math.min(canvas.width / FIELD.width, canvas.height / FIELD.height) / dpr;
-      const offX = (window.innerWidth - FIELD.width * scale) / 2;
-      const offY = (window.innerHeight - FIELD.height * scale) / 2;
-      clock += 1 / 60;
-
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.fillStyle = PALETTE.night;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.save();
-      // Screen shake during hits: a small random offset scaled by the remaining shake.
-      const shake = state.shake > 0 ? state.shake : 0;
-      ctx.translate((offX + (Math.random() - 0.5) * shake) * dpr, (offY + (Math.random() - 0.5) * shake) * dpr);
-      ctx.scale(scale * dpr, scale * dpr);
-      ctx.beginPath();
-      ctx.rect(0, 0, FIELD.width, FIELD.height);
-      ctx.clip();
-
-      // The always-present scene layers.
-      drawGround(clock);
-      drawCore(state, clock);
-      drawEntities(state, clock);
-
-      // Screen-specific layers on top.
-      if (screen === SCREEN_PLAY || screen === SCREEN_PAUSED || screen === SCREEN_UPGRADE) {
-        drawPlayer(state, clock);
-        drawHud(state, clock);
-      }
-      if (screen === SCREEN_UPGRADE) drawUpgradeChoice(state);
-      if (screen === SCREEN_TITLE) drawTitle(clock, best);
-      if (screen === SCREEN_OVER) drawOver(state, best);
-      if (screen === SCREEN_PAUSED) {
-        ctx.fillStyle = "rgba(8, 6, 16, 0.6)";
-        ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-        text("PAUSED", FIELD.width / 2, FIELD.height / 2 - 20, 48, PALETTE.text, "center", 800);
-        text("P or Esc resumes", FIELD.width / 2, FIELD.height / 2 + 30, 18, PALETTE.muted);
-      }
-      ctx.restore();
-    },
-  };
+  if (game.state === 'title') drawTitle(ctx, game.time);
+  if (game.state === 'upgrade') drawUpgradeChoice(ctx, game.offers, game.time);
+  if (game.state === 'end') drawEnd(ctx, game);
 }
