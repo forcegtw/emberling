@@ -18,6 +18,13 @@ export const EVENT_SPIT_FIRED = 512;
 
 const DIAG = Math.SQRT1_2; // normalises a diagonal move so no direction is faster
 
+/** Squared distance between two points - avoids a sqrt for radius overlap tests. */
+function distSq(ax, ay, bx, by) {
+  const dx = ax - bx;
+  const dy = ay - by;
+  return dx * dx + dy * dy;
+}
+
 function emptyState() {
   return {
     wave: 0,
@@ -42,6 +49,7 @@ function emptyState() {
       shield: false,
       magnet: PLAYER.pickRadius,
       scorch: 0,
+      coreArmor: 0,     // stacking damage reduction on the core, 0.15 per pick
     },
     spawnTimer: 0,
     toSpawn: 0,
@@ -60,7 +68,11 @@ export function createWorld(rng) {
 
   function beginWave(number) {
     state.wave = number;
-    state.toSpawn = WAVE.enemiesPerWaveBase + (number - 1) * WAVE.enemiesPerWavePerWave;
+    // Gentle onboarding, steep late game: near-flat for waves 1-4, then compounding.
+    const early = Math.max(0, number - 4);
+    state.toSpawn = WAVE.enemiesPerWaveBase
+      + Math.min(number - 1, 3) * WAVE.enemiesPerWavePerWave
+      + Math.round(early * early * WAVE.enemiesPerWaveLateGrowth);
     state.aliveThisWave = 0;
     state.spawnTimer = 0.6;
     state.announce = WAVE.announceSeconds;
@@ -79,14 +91,14 @@ export function createWorld(rng) {
     else if (side === 1) { x = FIELD.width + 40; y = FIELD.height * t; }
     else if (side === 2) { x = FIELD.width * t; y = FIELD.height + 40; }
     else { x = -40; y = FIELD.height * t; }
-    // Waves toughen shades slowly: every wave adds a little hp and speed.
-    const growth = 1 + (state.wave - 1) * 0.09;
+    // Waves toughen shades: each wave compounds hp and speed growth.
+    const growth = 1 + (state.wave - 1) * WAVE.shadeGrowthPerWave;
     state.shades.push({
       kind: pick.kind,
       x, y,
       hp: spec.hp * growth,
       hpMax: spec.hp * growth,
-      speed: spec.speed * (1 + (state.wave - 1) * 0.03),
+      speed: spec.speed * (1 + (state.wave - 1) * WAVE.shadeSpeedGrowthPerWave),
       slow: 0,           // seconds of halo-slow remaining
       hitFlash: 0,
       burn: 0,
@@ -111,8 +123,9 @@ export function createWorld(rng) {
     if (state.stats.scorch > 0) {
       for (const other of state.shades) {
         if (other === shade) continue;
-        const dx = other.x - shade.x; const dy = other.y - shade.y;
-        if (dx * dx + dy * dy < 130 * 130) other.burn = Math.max(other.burn, state.stats.scorch);
+        if (distSq(other.x, other.y, shade.x, shade.y) < 130 * 130) {
+          other.burn = Math.max(other.burn, state.stats.scorch);
+        }
       }
       state.effects.push({ kind: "burnring", x: shade.x, y: shade.y, age: 0, life: 0.4 });
     }
@@ -144,7 +157,8 @@ export function createWorld(rng) {
   }
 
   function hurtCore(damage) {
-    state.coreHp = Math.max(0, state.coreHp - damage);
+    const dealt = Math.max(1, Math.round(damage * (1 - state.stats.coreArmor)));
+    state.coreHp = Math.max(0, state.coreHp - dealt);
     state.coreFlash = CORE.hitFlashSeconds;
     state.shake = Math.min(14, state.shake + 6);
     if (state.coreHp <= 0) {
@@ -173,6 +187,7 @@ export function createWorld(rng) {
       case "magnet": s.magnet += 90; break;
       case "vital": state.lives = Math.min(5, state.lives + 1); break;
       case "scorch": s.scorch += 1.6; break;
+      case "aegis": s.coreArmor = Math.min(0.6, s.coreArmor + 0.15); break;
       default: break;
     }
     state.upgradeCount += 1;
@@ -309,8 +324,7 @@ export function createWorld(rng) {
         }
         for (let j = state.shades.length - 1; j >= 0; j -= 1) {
           const shade = state.shades[j];
-          const dx = shade.x - shot.x; const dy = shade.y - shot.y;
-          if (dx * dx + dy * dy < (SHADE[shade.kind].radius + PLAYER.bulletRadius) ** 2) {
+          if (distSq(shade.x, shade.y, shot.x, shot.y) < (SHADE[shade.kind].radius + PLAYER.bulletRadius) ** 2) {
             shade.hp -= s.bulletDamage;
             shade.hitFlash = 0.12;
             state.effects.push({ kind: "spark", x: shot.x, y: shot.y, age: 0, life: 0.2, color: PALETTE.bolt });
@@ -332,8 +346,7 @@ export function createWorld(rng) {
           state.spits.splice(i, 1);
           continue;
         }
-        const pdx = spit.x - player.x; const pdy = spit.y - player.y;
-        if (pdx * pdx + pdy * pdy < (PLAYER.radius + SPIT.radius) ** 2) {
+        if (distSq(spit.x, spit.y, player.x, player.y) < (PLAYER.radius + SPIT.radius) ** 2) {
           state.spits.splice(i, 1);
           state.shake = Math.min(10, state.shake + 4);
           continue;

@@ -272,17 +272,44 @@ export function createRenderer(canvas) {
   }
 
   function drawOver(state, best) {
-    ctx.fillStyle = "rgba(8, 6, 16, 0.8)";
+    ctx.fillStyle = "rgba(8, 6, 16, 0.85)";
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-    text("THE LANTERN IS OUT", FIELD.width / 2, 190, 56, PALETTE.danger, "center", 800);
-    text(`Score  ${state.score}`, FIELD.width / 2, 280, 34, PALETTE.text, "center", 700);
-    text(`Waves survived  ${Math.max(0, state.wave - 1)}`, FIELD.width / 2, 330, 20, PALETTE.muted);
-    text(`Embers gathered  ${state.embers}`, FIELD.width / 2, 362, 20, PALETTE.muted);
-    text(`Blessings taken  ${state.upgradeCount}`, FIELD.width / 2, 394, 20, PALETTE.muted);
-    if (state.score >= best && state.score > 0) text("NEW BEST!", FIELD.width / 2, 440, 24, PALETTE.ember, "center", 800);
-    else text(`Best  ${best}`, FIELD.width / 2, 440, 20, PALETTE.ember);
+    // Fading red vignette to sell the "light went out" moment.
+    const fade = ctx.createRadialGradient(FIELD.width / 2, 240, 60, FIELD.width / 2, 240, 560);
+    fade.addColorStop(0, "rgba(224, 90, 90, 0.18)");
+    fade.addColorStop(1, "rgba(224, 90, 90, 0)");
+    ctx.fillStyle = fade;
+    ctx.fillRect(0, 0, FIELD.width, FIELD.height);
+    text("THE LANTERN IS OUT", FIELD.width / 2, 170, 56, PALETTE.danger, "center", 800);
+    // Score is the hero number, framed by a hairline rule.
+    text(`Score  ${state.score}`, FIELD.width / 2, 260, 44, PALETTE.core, "center", 800);
+    ctx.strokeStyle = PALETTE.grid;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(FIELD.width / 2 - 180, 300);
+    ctx.lineTo(FIELD.width / 2 + 180, 300);
+    ctx.stroke();
+    // Run summary as aligned label/value rows.
+    const rows = [
+      ["Waves survived", Math.max(0, state.wave - 1)],
+      ["Embers gathered", state.embers],
+      ["Blessings taken", state.upgradeCount],
+    ];
+    rows.forEach(([label, value], i) => {
+      const y = 340 + i * 34;
+      text(label, FIELD.width / 2 - 130, y, 18, PALETTE.muted, "left");
+      text(String(value), FIELD.width / 2 + 130, y, 18, PALETTE.text, "right", 700);
+    });
+    if (state.score >= best && state.score > 0) {
+      const shine = 0.7 + Math.sin(performance.now() / 220) * 0.3;
+      ctx.globalAlpha = shine;
+      text("★ NEW BEST ★", FIELD.width / 2, 478, 26, PALETTE.ember, "center", 800);
+      ctx.globalAlpha = 1;
+    } else {
+      text(`Best  ${best}`, FIELD.width / 2, 478, 20, PALETTE.ember);
+    }
     ctx.globalAlpha = 0.7 + Math.sin(performance.now() / 300) * 0.3;
-    text("CLICK OR PRESS SPACE TO RELIGHT THE LANTERN", FIELD.width / 2, 510, 22, PALETTE.player, "center", 800);
+    text("CLICK OR PRESS SPACE TO RELIGHT THE LANTERN", FIELD.width / 2, 540, 22, PALETTE.player, "center", 800);
     ctx.globalAlpha = 1;
   }
 

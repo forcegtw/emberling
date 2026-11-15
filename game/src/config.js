@@ -24,6 +24,9 @@ export const WAVE = {
   spawnIntervalMin: 0.28,
   enemiesPerWaveBase: 6,
   enemiesPerWavePerWave: 3,
+  enemiesPerWaveLateGrowth: 0.7, // quadratic extra enemies per wave beyond wave 4
+  shadeGrowthPerWave: 0.09,      // shade hp multiplier added per wave
+  shadeSpeedGrowthPerWave: 0.03, // shade speed multiplier added per wave
   intermission: 4.5,            // seconds between waves (upgrade choice sits over it)
   announceSeconds: 2.2,
 };
@@ -67,6 +70,7 @@ export const UPGRADES = [
   { id: "magnet",  title: "Ember Lure",   detail: "Embers fly to you from further" },
   { id: "vital",   title: "Second Wick",  detail: "+1 life (max 5)" },
   { id: "scorch",  title: "Scorch Trail", detail: "Slain shades burn their neighbours" },
+  { id: "aegis",   title: "Aegis Ward",   detail: "Core takes 15% less damage (stacks)" },
 ];
 
 export const PALETTE = {
