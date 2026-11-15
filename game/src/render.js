@@ -1,247 +1,242 @@
-// Emberling — the renderer. Everything is drawn in code on one canvas: arena, entities, HUD, menus.
+// All drawing: arena, ember, entities, HUD, and full-screen states.
+import { VIEW_W, VIEW_H } from './config.js';
 
-import { W, H, ARENA, PALETTE as C } from './config.js';
-
-function drawArena(ctx, time) {
-  ctx.fillStyle = C.bg;
-  ctx.fillRect(0, 0, W, H);
-
-  // slow-scrolling frost grid
-  ctx.strokeStyle = C.bgGrid;
+export function drawArena(ctx, t) {
+  const g = ctx.createLinearGradient(0, 0, 0, VIEW_H);
+  g.addColorStop(0, '#0b1020');
+  g.addColorStop(1, '#141a2e');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  // frost lattice floor
+  ctx.strokeStyle = 'rgba(120,170,255,0.07)';
   ctx.lineWidth = 1;
-  const step = 64;
-  const off = (time * 8) % step;
-  ctx.beginPath();
-  for (let x = -step + off; x <= W; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
-  for (let y = -step + off; y <= H; y += step) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
-  ctx.stroke();
-
-  // arena border
-  ctx.strokeStyle = C.arenaEdge;
-  ctx.lineWidth = 4;
-  ctx.strokeRect(ARENA.pad, ARENA.pad, ARENA.w - ARENA.pad * 2, ARENA.h - ARENA.pad * 2);
-}
-
-function drawPlayer(ctx, p) {
-  const blink = p.invuln > 0 && Math.floor(p.invuln * 12) % 2 === 0;
-  if (blink) return;
-  const flick = Math.sin(p.flame) * 2;
-  // aura
-  ctx.fillStyle = 'rgba(255,157,60,0.18)';
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, 26 + flick, 0, Math.PI * 2);
-  ctx.fill();
-  // outer flame
-  ctx.fillStyle = C.ember;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, p.radius() + 3 + flick, 0, Math.PI * 2);
-  ctx.fill();
-  // core
-  ctx.fillStyle = C.emberCore;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, p.radius() - 4, 0, Math.PI * 2);
-  ctx.fill();
-  // eyes
-  ctx.fillStyle = C.bg;
-  ctx.fillRect(p.x - 5, p.y - 3, 3, 5);
-  ctx.fillRect(p.x + 2, p.y - 3, 3, 5);
-}
-
-function drawWisp(ctx, w) {
-  const pale = w.hp / w.maxHp;
-  ctx.fillStyle = w.kind === 'brute' ? C.frostDeep : w.kind === 'dart' ? C.shard : C.frost;
-  ctx.globalAlpha = 0.55 + 0.45 * pale;
-  // spiky frost body
-  ctx.beginPath();
-  const spikes = w.kind === 'brute' ? 8 : 6;
-  for (let i = 0; i <= spikes; i++) {
-    const a = (i / spikes) * Math.PI * 2 + w.wobble;
-    const r = i % 2 === 0 ? w.r : w.r * 0.62;
-    const px = w.x + Math.cos(a) * r, py = w.y + Math.sin(a) * r;
-    i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.globalAlpha = 1;
-  // cold eye
-  ctx.fillStyle = '#eafcff';
-  ctx.beginPath();
-  ctx.arc(w.x, w.y, 2.5, 0, Math.PI * 2);
-  ctx.fill();
-
-  if (w.maxHp > 1 && w.hp < w.maxHp) {
-    ctx.fillStyle = C.danger;
-    ctx.fillRect(w.x - w.r, w.y - w.r - 8, w.r * 2 * pale, 3);
-  }
-}
-
-function drawBullet(ctx, b) {
-  ctx.fillStyle = C.emberCore;
-  ctx.beginPath();
-  ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = C.ember;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(b.x, b.y, b.r + 3, 0, Math.PI * 2);
-  ctx.stroke();
-}
-
-function drawAimLine(ctx, player, mouse) {
-  const dx = mouse.x - player.x, dy = mouse.y - player.y;
-  const d = Math.hypot(dx, dy) || 1;
-  ctx.strokeStyle = 'rgba(255,157,60,0.25)';
-  ctx.setLineDash([6, 10]);
-  ctx.beginPath();
-  ctx.moveTo(player.x + (dx / d) * 22, player.y + (dy / d) * 22);
-  ctx.lineTo(player.x + (dx / d) * 120, player.y + (dy / d) * 120);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  // reticle at the cursor
-  ctx.strokeStyle = 'rgba(255,233,176,0.8)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(mouse.x, mouse.y, 9, 0, Math.PI * 2);
-  ctx.moveTo(mouse.x - 14, mouse.y);
-  ctx.lineTo(mouse.x - 5, mouse.y);
-  ctx.moveTo(mouse.x + 5, mouse.y);
-  ctx.lineTo(mouse.x + 14, mouse.y);
-  ctx.stroke();
-}
-
-function drawWaveBanner(ctx, game) {
-  if (game.bannerTimer <= 0) return;
-  const a = Math.min(1, game.bannerTimer / 0.4);
-  ctx.globalAlpha = a;
-  ctx.textAlign = 'center';
-  ctx.fillStyle = C.frost;
-  ctx.font = 'bold 40px system-ui, sans-serif';
-  ctx.fillText(`WAVE ${game.wave}`, W / 2, 150);
-  ctx.globalAlpha = 1;
-  ctx.textAlign = 'left';
-}
-
-function drawHUD(ctx, game) {
-  const { player, wave, score, combo, enemiesLeft } = game;
-  ctx.font = 'bold 20px system-ui, sans-serif';
-  ctx.fillStyle = C.text;
-  ctx.textAlign = 'left';
-  ctx.fillText(`WAVE ${wave}`, 32, 40);
-  ctx.fillText(`SCORE ${score}`, 32, 68);
-
-  ctx.textAlign = 'right';
-  ctx.fillText(`WISPS ${enemiesLeft}`, W - 32, 40);
-  if (combo > 1) {
-    ctx.fillStyle = C.ember;
-    ctx.fillText(`COMBO x${combo}`, W - 32, 68);
-  }
-
-  // health as flame hearts
-  ctx.textAlign = 'left';
-  for (let i = 0; i < 5; i++) {
-    const hx = W / 2 - 62 + i * 26;
+  for (let x = 0; x <= VIEW_W; x += 64) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, VIEW_H); ctx.stroke(); }
+  for (let y = 0; y <= VIEW_H; y += 64) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(VIEW_W, y); ctx.stroke(); }
+  // drifting frost motes
+  for (let i = 0; i < 40; i++) {
+    const x = ((i * 97 + t * (8 + i % 5 * 3)) % (VIEW_W + 40)) - 20;
+    const y = ((i * 61 + t * 12) % (VIEW_H + 40)) - 20;
+    ctx.fillStyle = `rgba(160,200,255,${0.04 + (i % 4) * 0.02})`;
     ctx.beginPath();
-    const filled = i < player.hp;
-    ctx.fillStyle = filled ? C.ember : '#2a2130';
-    // little flame shape
-    ctx.moveTo(hx, 28);
-    ctx.quadraticCurveTo(hx - 8, 40, hx, 52);
-    ctx.quadraticCurveTo(hx + 8, 40, hx, 28);
+    ctx.arc(x, y, 1.5 + (i % 3), 0, Math.PI * 2);
     ctx.fill();
   }
 }
 
-function drawTitle(ctx, time) {
-  ctx.fillStyle = 'rgba(10,14,26,0.75)';
-  ctx.fillRect(0, 0, W, H);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = C.ember;
-  ctx.font = 'bold 84px system-ui, sans-serif';
-  const wob = Math.sin(time * 2) * 4;
-  ctx.fillText('EMBERLING', W / 2, 240 + wob);
-  ctx.fillStyle = C.frost;
-  ctx.font = '26px system-ui, sans-serif';
-  ctx.fillText('a flame against the frost', W / 2, 290);
-  ctx.fillStyle = C.text;
-  ctx.font = '20px system-ui, sans-serif';
-  ctx.fillText('WASD / arrows — move      Mouse — aim      Hold click — shoot', W / 2, 420);
-  ctx.fillText('Survive the waves. Between waves, choose one of three blessings.', W / 2, 456);
-  ctx.fillStyle = Math.sin(time * 4) > 0 ? C.emberCore : C.dim;
-  ctx.font = 'bold 28px system-ui, sans-serif';
-  ctx.fillText('Press SPACE or click to begin', W / 2, 560);
-  ctx.textAlign = 'left';
-}
-
-function drawUpgradeChoice(ctx, offers, time) {
-  ctx.fillStyle = 'rgba(10,14,26,0.82)';
-  ctx.fillRect(0, 0, W, H);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = C.emberCore;
-  ctx.font = 'bold 44px system-ui, sans-serif';
-  ctx.fillText('Wave cleared — choose a blessing', W / 2, 200);
-
-  const cw = 300, ch = 220, gap = 40;
-  const x0 = W / 2 - (cw * 3 + gap * 2) / 2;
-  offers.forEach((u, i) => {
-    const x = x0 + i * (cw + gap);
-    const y = 270;
-    const hover = Math.sin(time * 3 + i) * 3;
-    ctx.fillStyle = '#141b30';
-    ctx.strokeStyle = C.ember;
-    ctx.lineWidth = 3;
-    ctx.fillRect(x, y + hover, cw, ch);
-    ctx.strokeRect(x, y + hover, cw, ch);
-    ctx.fillStyle = C.dim;
-    ctx.font = 'bold 30px system-ui, sans-serif';
-    ctx.fillText(String(i + 1), x + cw / 2, y + hover + 44);
-    ctx.fillStyle = C.ember;
-    ctx.font = 'bold 26px system-ui, sans-serif';
-    ctx.fillText(u.name, x + cw / 2, y + hover + 100);
-    ctx.fillStyle = C.text;
-    ctx.font = '18px system-ui, sans-serif';
-    ctx.fillText(u.desc, x + cw / 2, y + hover + 140);
-  });
-  ctx.fillStyle = C.dim;
-  ctx.font = '18px system-ui, sans-serif';
-  ctx.fillText('Press 1, 2 or 3', W / 2, 560);
-  ctx.textAlign = 'left';
-}
-
-function drawEnd(ctx, game) {
-  ctx.fillStyle = 'rgba(10,14,26,0.85)';
-  ctx.fillRect(0, 0, W, H);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = C.danger;
-  ctx.font = 'bold 72px system-ui, sans-serif';
-  ctx.fillText('THE FLAME FADES', W / 2, 260);
-  ctx.fillStyle = C.text;
-  ctx.font = '30px system-ui, sans-serif';
-  ctx.fillText(`You fell on wave ${game.wave} with ${game.score} points`, W / 2, 340);
-  ctx.fillText(`Best run: ${game.bestScore} points`, W / 2, 386);
-  ctx.fillStyle = Math.sin(game.time * 4) > 0 ? C.emberCore : C.dim;
-  ctx.font = 'bold 26px system-ui, sans-serif';
-  ctx.fillText('Press SPACE or click to rekindle', W / 2, 500);
-  ctx.textAlign = 'left';
-}
-
-export function render(ctx, game) {
+export function drawPlayer(ctx, p, t) {
   ctx.save();
-  const sh = game.shake.offset();
-  ctx.translate(sh.x, sh.y);
-  drawArena(ctx, game.time);
-
-  drawAimLine(ctx, game.player, game.mouse);
-  for (const b of game.bullets) drawBullet(ctx, b);
-  for (const w of game.wisps) drawWisp(ctx, w);
-  drawPlayer(ctx, game.player);
-  game.particles.draw(ctx);
-  game.texts.draw(ctx);
+  ctx.translate(p.x, p.y);
+  // aim reticle beam
+  ctx.rotate(p.aim);
+  ctx.strokeStyle = 'rgba(255,150,60,0.25)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(p.radius + 4, 0);
+  ctx.lineTo(p.radius + 26, 0);
+  ctx.stroke();
+  ctx.rotate(-p.aim);
+  // flicker aura
+  const flick = 0.8 + Math.sin(t * 20) * 0.1;
+  if (p.invuln > 0 && Math.floor(t * 14) % 2 === 0) ctx.globalAlpha = 0.45;
+  const g = ctx.createRadialGradient(0, 0, 2, 0, 0, p.radius * 1.9 * flick);
+  g.addColorStop(0, 'rgba(255,230,160,0.95)');
+  g.addColorStop(0.5, 'rgba(255,120,40,0.6)');
+  g.addColorStop(1, 'rgba(255,60,10,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, p.radius * 1.9 * flick, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffe9b0';
+  ctx.beginPath();
+  ctx.arc(0, 0, p.radius * 0.62, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
   ctx.restore();
+}
 
-  drawHUD(ctx, game);
-  drawWaveBanner(ctx, game);
+export function drawBullets(ctx, bullets) {
+  for (const b of bullets) {
+    const g = ctx.createRadialGradient(b.x, b.y, 1, b.x, b.y, b.radius * 2.2);
+    g.addColorStop(0, '#fff3c0');
+    g.addColorStop(0.4, '#ffb050');
+    g.addColorStop(1, 'rgba(255,80,20,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius * 2.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
 
-  if (game.state === 'title') drawTitle(ctx, game.time);
-  if (game.state === 'upgrade') drawUpgradeChoice(ctx, game.offers, game.time);
-  if (game.state === 'end') drawEnd(ctx, game);
+export function drawEnemies(ctx, enemies, t) {
+  for (const e of enemies) {
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    const wob = 1 + Math.sin(t * 6 + e.wobble) * 0.08;
+    const g = ctx.createRadialGradient(0, 0, 1, 0, 0, e.radius * 1.8);
+    g.addColorStop(0, `hsla(${e.hue},90%,80%,0.95)`);
+    g.addColorStop(0.55, `hsla(${e.hue},85%,60%,0.6)`);
+    g.addColorStop(1, `hsla(${e.hue},85%,45%,0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, e.radius * 1.8 * wob, 0, Math.PI * 2);
+    ctx.fill();
+    if (e.kind === 'shard') {
+      ctx.rotate(e.wobble * 0.5);
+      ctx.fillStyle = `hsl(${e.hue},90%,72%)`;
+      ctx.beginPath();
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI * 2;
+        const px = Math.cos(a) * e.radius, py = Math.sin(a) * e.radius;
+        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.fillStyle = `hsl(${e.hue},80%,74%)`;
+      ctx.beginPath();
+      ctx.arc(0, 0, e.radius * wob, 0, Math.PI * 2);
+      ctx.fill();
+      if (e.kind === 'brute') {
+        ctx.strokeStyle = `hsla(${e.hue},90%,85%,0.8)`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, e.radius * 1.25, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    // hp pips
+    if (e.hp < e.maxHp) {
+      const w = e.radius * 2;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(e.x - w / 2, e.y - e.radius - 10, w, 3);
+      ctx.fillStyle = `hsl(${e.hue},90%,70%)`;
+      ctx.fillRect(e.x - w / 2, e.y - e.radius - 10, w * (e.hp / e.maxHp), 3);
+    }
+  }
+}
+
+export function drawHud(ctx, state) {
+  // hearts
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 20px monospace';
+  for (let i = 0; i < state.player.maxHp; i++) {
+    ctx.fillStyle = i < Math.floor(state.player.hp) ? '#ff9d45' : 'rgba(255,255,255,0.15)';
+    ctx.fillText(i < Math.floor(state.player.hp) ? '●' : '○', 18 + i * 22, 30);
+  }
+  ctx.font = 'bold 16px monospace';
+  ctx.fillStyle = '#cfe3ff';
+  ctx.fillText(`WAVE ${state.waves.wave}`, 18, 58);
+  ctx.fillText(`SCORE ${state.score}`, 18, 80);
+  if (state.combo.mult > 1) {
+    ctx.fillStyle = '#ffd27a';
+    ctx.fillText(`x${state.combo.mult.toFixed(1)} COMBO`, 18, 102);
+  }
+  // wave countdown
+  if (state.waves.state === 'done') {
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 22px monospace';
+    ctx.fillStyle = '#9fc4ff';
+    ctx.fillText(`Wave ${state.waves.wave} cleared`, VIEW_W / 2, 130);
+  }
+  // mute hint
+  ctx.textAlign = 'right';
+  ctx.font = '13px monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillText(state.sound.muted ? 'muted (m)' : 'sound on (m)', VIEW_W - 18, 26);
+}
+
+export function drawTitle(ctx, t) {
+  drawArena(ctx, t);
+  const cy = VIEW_H / 2 - 60;
+  const flick = 1 + Math.sin(t * 3) * 0.02;
+  ctx.save();
+  ctx.translate(VIEW_W / 2, cy);
+  ctx.scale(flick, flick);
+  const g = ctx.createRadialGradient(0, 0, 10, 0, 0, 200);
+  g.addColorStop(0, 'rgba(255,200,90,0.9)');
+  g.addColorStop(0.5, 'rgba(255,100,30,0.35)');
+  g.addColorStop(1, 'rgba(255,60,10,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, 200, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 72px monospace';
+  ctx.fillStyle = '#ffd27a';
+  ctx.fillText('EMBERLING', VIEW_W / 2, cy + 10);
+  ctx.font = '18px monospace';
+  ctx.fillStyle = '#9fc4ff';
+  ctx.fillText('A flame spirit against the frost wisps', VIEW_W / 2, cy + 56);
+  const pulse = 0.6 + Math.sin(t * 4) * 0.4;
+  ctx.font = 'bold 22px monospace';
+  ctx.fillStyle = `rgba(255,230,170,${pulse})`;
+  ctx.fillText('CLICK TO IGNITE', VIEW_W / 2, cy + 130);
+  ctx.font = '14px monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.fillText('WASD move · mouse aim · hold click to shoot · M mute', VIEW_W / 2, cy + 170);
+}
+
+export function drawUpgrade(ctx, offers, t, hoverIdx) {
+  drawArena(ctx, t);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 40px monospace';
+  ctx.fillStyle = '#ffd27a';
+  ctx.fillText('CHOOSE A BLESSING', VIEW_W / 2, 150);
+  ctx.font = '15px monospace';
+  ctx.fillStyle = '#9fc4ff';
+  ctx.fillText('press 1 / 2 / 3 or click', VIEW_W / 2, 185);
+  const cw = 280, ch = 220, gap = 40;
+  const x0 = VIEW_W / 2 - (cw * 3 + gap * 2) / 2;
+  offers.forEach((o, i) => {
+    const x = x0 + i * (cw + gap), y = 260;
+    const lift = hoverIdx === i ? -8 : 0;
+    ctx.fillStyle = hoverIdx === i ? 'rgba(60,45,25,0.92)' : 'rgba(25,32,52,0.92)';
+    ctx.strokeStyle = hoverIdx === i ? '#ffd27a' : 'rgba(140,180,255,0.4)';
+    ctx.lineWidth = 2;
+    roundRect(ctx, x, y + lift, cw, ch, 12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#ffe9b0';
+    ctx.font = '44px monospace';
+    ctx.fillText(o.icon, x + cw / 2, y + lift + 62);
+    ctx.font = 'bold 22px monospace';
+    ctx.fillStyle = '#ffd27a';
+    ctx.fillText(o.name, x + cw / 2, y + lift + 110);
+    ctx.font = '15px monospace';
+    ctx.fillStyle = '#cfe3ff';
+    ctx.fillText(o.desc, x + cw / 2, y + lift + 145);
+    ctx.font = 'bold 18px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.fillText(`[${i + 1}]`, x + cw / 2, y + lift + 190);
+  });
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+export function drawEnd(ctx, state, t) {
+  drawArena(ctx, t);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 58px monospace';
+  ctx.fillStyle = '#ff9d45';
+  ctx.fillText('THE FLAME FADES', VIEW_W / 2, VIEW_H / 2 - 90);
+  ctx.font = 'bold 28px monospace';
+  ctx.fillStyle = '#ffe9b0';
+  ctx.fillText(`SCORE ${state.score}`, VIEW_W / 2, VIEW_H / 2 - 30);
+  ctx.font = '18px monospace';
+  ctx.fillStyle = '#9fc4ff';
+  ctx.fillText(`survived ${state.waves.wave} waves`, VIEW_W / 2, VIEW_H / 2 + 5);
+  ctx.font = 'bold 20px monospace';
+  const pulse = 0.55 + Math.sin(t * 4) * 0.45;
+  ctx.fillStyle = `rgba(255,230,170,${pulse})`;
+  ctx.fillText('CLICK TO REKINDLE', VIEW_W / 2, VIEW_H / 2 + 70);
 }

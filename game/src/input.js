@@ -1,48 +1,46 @@
-// Emberling — input, rewritten fresh: WASD/arrows move, mouse aims and fires,
-// digit keys pick upgrade choices, Space starts. The game polls the take* methods.
-
+// Keyboard + mouse input. Arrow keys mirror WASD; click/hold to shoot.
 export class Input {
   constructor(canvas) {
+    this.canvas = canvas;
     this.keys = new Set();
-    this.mouse = { x: 640, y: 360, down: false };
-    this.choiceIndex = -1;    // set by Digit1/2/3 during an upgrade choice
-    this.firePressed = false; // one-shot, consumed via takeFire()
-    this.startPressed = false;
+    this.mouseX = 640;
+    this.mouseY = 360;
+    this.mouseDown = false;
+    this.clicked = false;   // consumed once per frame
+    this.anyKey = false;    // consumed once per frame (start / restart)
+    this._pickChoice = -1;  // 1/2/3 key consumed by upgrade screen
 
-    window.addEventListener('keydown', e => {
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
-      this.keys.add(e.code);
-      if (e.code === 'Digit1') this.choiceIndex = 0;
-      if (e.code === 'Digit2') this.choiceIndex = 1;
-      if (e.code === 'Digit3') this.choiceIndex = 2;
-      if (e.code === 'Space') this.startPressed = true;
+    window.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      this.keys.add(k);
+      this.anyKey = true;
+      if (k >= '1' && k <= '3') this._pickChoice = parseInt(k, 10) - 1;
+      if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
     });
-    window.addEventListener('keyup', e => this.keys.delete(e.code));
-
-    // Map pointer coords into canvas space, accounting for CSS scaling.
-    canvas.addEventListener('mousemove', e => {
+    window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()));
+    canvas.addEventListener('mousemove', (e) => {
       const r = canvas.getBoundingClientRect();
-      this.mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
-      this.mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
+      this.mouseX = (e.clientX - r.left) * (canvas.width / r.width);
+      this.mouseY = (e.clientY - r.top) * (canvas.height / r.height);
     });
-    canvas.addEventListener('mousedown', () => { this.mouse.down = true; this.firePressed = true; });
-    window.addEventListener('mouseup', () => { this.mouse.down = false; });
-    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    canvas.addEventListener('mousedown', (e) => { if (e.button === 0) this.mouseDown = true; });
+    window.addEventListener('mouseup', (e) => { if (e.button === 0) this.mouseDown = false; });
+    canvas.addEventListener('click', () => { this.clicked = true; this.anyKey = true; });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
-  // Normalized movement axis (diagonals scaled to length 1).
-  moveAxis() {
-    let x = 0, y = 0;
-    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) y -= 1;
-    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) y += 1;
-    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) x -= 1;
-    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) x += 1;
-    if (x && y) { x *= Math.SQRT1_2; y *= Math.SQRT1_2; }
-    return { x, y };
+  axis() {
+    let dx = 0, dy = 0;
+    if (this.keys.has('a') || this.keys.has('arrowleft')) dx -= 1;
+    if (this.keys.has('d') || this.keys.has('arrowright')) dx += 1;
+    if (this.keys.has('w') || this.keys.has('arrowup')) dy -= 1;
+    if (this.keys.has('s') || this.keys.has('arrowdown')) dy += 1;
+    if (dx && dy) { const s = Math.SQRT1_2; dx *= s; dy *= s; }
+    return { dx, dy };
   }
 
-  firing() { return this.mouse.down; }
-  takeChoice() { const c = this.choiceIndex; this.choiceIndex = -1; return c; }
-  takeFire() { const f = this.firePressed; this.firePressed = false; return f; }
-  takeStart() { const s = this.startPressed; this.startPressed = false; return s; }
+  shooting() { return this.mouseDown; }
+  consumeClick() { const c = this.clicked; this.clicked = false; return c; }
+  consumeKey() { const a = this.anyKey; this.anyKey = false; return a; }
+  consumeChoice() { const c = this._pickChoice; this._pickChoice = -1; return c; }
 }

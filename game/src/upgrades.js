@@ -1,40 +1,45 @@
-// Emberling — upgrade choices offered between waves. Each run picks 3, player takes 1.
-
-export const UPGRADES = [
+// Blessings offered between waves. Pick 1 of 3.
+export const BLESSINGS = [
   {
-    id: 'rapid', name: 'Quickflame', desc: 'Fire 30% faster',
-    apply(p) { p.fireRateMul *= 1.3; },
+    id: 'firerate', name: 'Quickspark', icon: '⚡',
+    desc: '+18% fire rate',
+    apply(p) { p.fireRate *= 1.18; },
   },
   {
-    id: 'spread', name: 'Twin Spark', desc: '+1 ember per shot',
-    apply(p) { p.bulletCount += 1; },
+    id: 'twin', name: 'Twin Spark', icon: '🔥',
+    desc: 'Split every shot into two',
+    apply(p) { if (p.twin) { p.fireRate *= 1.2; } else { p.twin = true; } },
   },
   {
-    id: 'power', name: 'Hot Core', desc: 'Embers deal +1 damage',
-    apply(p) { p.damage += 1; },
+    id: 'damage', name: 'Ember Wrath', icon: '☄️',
+    desc: '+30% bullet damage',
+    apply(p) { p.damage *= 1.3; },
   },
   {
-    id: 'swift', name: 'Rising Heat', desc: 'Move 20% faster',
-    apply(p) { p.speedMul *= 1.2; },
+    id: 'speed', name: 'Cinder Steps', icon: '💨',
+    desc: '+15% move speed',
+    apply(p) { p.speedMult *= 1.15; },
   },
   {
-    id: 'pierce', name: 'Burning Through', desc: 'Embers pierce 1 extra wisp',
+    id: 'pierce', name: 'Piercing Heat', icon: '➹',
+    desc: 'Bullets pierce +1 foe',
     apply(p) { p.pierce += 1; },
   },
   {
-    id: 'heal', name: 'Rekindle', desc: 'Recover 1 health',
-    apply(p) { p.hp = Math.min(5, p.hp + 1); },
+    id: 'heal', name: 'Rekindle', icon: '❤',
+    desc: 'Restore 2 ember hearts',
+    apply(p) { p.hp = Math.min(p.maxHp, p.hp + 2); },
   },
 ];
 
-// Pick three distinct offers, guaranteeing Rekindle shows up when hurt.
-export function rollOffers(player, rng = Math.random) {
-  const pool = UPGRADES.filter(u => u.id !== 'heal');
+// Deterministic pick of 3 distinct offers given an rng.
+export function rollOffers(rng, takenCounts) {
+  const pool = BLESSINGS.filter((b) => !(b.id === 'twin' && (takenCounts.twin || 0) >= 3));
   const offers = [];
-  if (player.hp < 3 && rng() < 0.45) offers.push(UPGRADES.find(u => u.id === 'heal'));
-  while (offers.length < 3) {
-    const u = pool[Math.floor(rng() * pool.length)];
-    if (!offers.some(o => o.id === u.id)) offers.push(u);
+  const bag = pool.slice();
+  while (offers.length < 3 && bag.length > 0) {
+    const i = Math.floor(rng() * bag.length);
+    offers.push(bag.splice(i, 1)[0]);
   }
   return offers;
 }

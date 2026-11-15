@@ -1,165 +1,207 @@
-// Emberling — game state machine and simulation. States: title | play | upgrade | end.
-
-import { W, H, SCORE } from './config.js';
-import { Player, Bullet } from './entities.js';
-import { WaveDirector } from './waves.js';
+// Game state machine and the core update loop.
+import { CONFIG, VIEW_W, makeRng } from './config.js';
+import { Sound } from './sound.js';
+import { Effects } from './effects.js';
+import { Input } from './input.js';
+import * as E from './entities.js';
+import { Waves } from './waves.js';
 import { rollOffers } from './upgrades.js';
-import { sfx } from './sound.js';
-import { Particles, FloatTexts, ScreenShake } from './effects.js';
+import * as R from './render.js';
+
+const CARD_W = 280, CARD_H = 220, CARD_GAP = 40;
+
+function cardRect(i) {
+  const x0 = VIEW_W / 2 - (CARD_W * 3 + CARD_GAP * 2) / 2;
+  return { x: x0 + i * (CARD_W + CARD_GAP), y: 260, w: CARD_W, h: CARD_H };
+}
 
 export class Game {
-  constructor(input) {
-    this.input = input;
-    this.mouse = input.mouse;
-    this.state = 'title';
+  constructor(canvas, params = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.sound = new Sound();
+    this.input = new Input(canvas);
+    this.effects = new Effects();
+    this.seed = params.seed != null && !isNaN(Number(params.seed)) ? Number(params.seed) : CONFIG.seedDefault;
+    this.shotMode = params.shot || null;   // title|play|upgrade|end
+    this.reset();
     this.time = 0;
-    this.bestScore = Number(localStorage.getItem('emberling-best') || 0);
 
-    this.particles = new Particles();
-    this.texts = new FloatTexts();
-    this.shake = new ScreenShake();
-    this.director = new WaveDirector(this);
+    if (this.shotMode) {
+      this.sound.muted = true;
+      this.applyShotState();
+    }
 
-    this.player = new Player(W / 2, H / 2);
+    this._loop = this.loop.bind(this);
+    requestAnimationFrame(this._loop);
+  }
+
+  reset() {
+    this.rng = makeRng(this.seed ^ 0x9e3779b9);
+    this.player = E.makePlayer();
     this.bullets = [];
-    this.wisps = [];
-    this.wave = 1;
-    this.bannerTimer = 0;
+    this.enemies = [];
+    this.waves = new Waves(this.rng);
     this.score = 0;
-    this.combo = 0;
+    this.combo = { count: 0, mult: 1, timer: 0 };
+    this.state = 'title';
     this.offers = [];
+    this.takenCounts = {};
+    this.effects.clear();
+  }
+
+  comboOnKill(e) {
+    this.combo.count++;
+    this.combo.timer = CONFIG.combo.window;
+    this.combo.mult = Math.min(CONFIG.combo.maxMult, 1 + this.combo.count * CONFIG.combo.perKill);
+    const gained = Math.round(e.score * this.combo.mult);
+    this.score += gained;
+    this.effects.text(e.x, e.y - e.radius - 14, `+${gained}`, '#ffd27a', 14);
+    this.sound.kill(this.combo.count);
   }
 
   startRun() {
-    this.player = new Player(W / 2, H / 2);
-    this.bullets = [];
-    this.wisps = [];
-    this.score = 0;
-    this.combo = 0;
+    this.reset();
     this.state = 'play';
-    this.director.beginWave(1);
-    this.bannerTimer = 1.4;
-    sfx.start();
+    this.sound.init();
+    this.sound.resume();
+    this.sound.waveStart();
+    this.waves.startNext();
   }
 
-  completeWave() {
-    this.score += SCORE.perWaveClear;
-    this.texts.add(this.player.x, this.player.y - 30, `+${SCORE.perWaveClear}`, '#7ce38b');
-    this.offers = rollOffers(this.player);
+  applyShotState() {
+    // Force a specific visual state deterministically for screenshots.
+    if (this.shotMode === 'title') {
+      this.state = 'title';
+      this.time = 1.5;
+      return;
+    }
+    this.startRun();
+    const dt = 1 / 60;
+    for (let i = 0; i < 240; i++) this.step(dt);   // fast-forward 4s of combat
+    if (this.shotMode === 'upgrade') {
+      this.enemies.length = 0;
+      this.beginUpgradePick();
+    } else if (this.shotMode === 'end') {
+      this.player.hp = 0;
+      this.state = 'end';
+    }
+    this.time = 4;
+  }
+
+  beginUpgradePick() {
+    this.offers = rollOffers(this.rng, this.takenCounts);
     this.state = 'upgrade';
-    sfx.waveClear();
   }
 
-  pickUpgrade(i) {
-    const offer = this.offers[i];
-    if (!offer) return;
-    offer.apply(this.player);
-    this.texts.add(this.player.x, this.player.y - 30, offer.name, '#ffe9b0');
+  pickOffer(i) {
+    const o = this.offers[i];
+    if (!o) return;
+    o.apply(this.player);
+    this.takenCounts[o.id] = (this.takenCounts[o.id] || 0) + 1;
+    this.effects.text(VIEW_W / 2, VIEW_H / 2 - 40, o.name.toUpperCase(), '#ffd27a', 26);
+    this.sound.pick();
     this.offers = [];
     this.state = 'play';
-    this.director.beginWave(this.wave + 1);
-    this.bannerTimer = 1.4;
-    sfx.upgrade();
+    this.waves.state = 'done';
+    this.waves.pauseTimer = 0.6;
+    this.sound.waveStart();
   }
 
-  shoot(aim) {
-    const p = this.player;
-    const base = Math.atan2(aim.y - p.y, aim.x - p.x);
-    const spread = 0.14;
-    for (let i = 0; i < p.bulletCount; i++) {
-      const angle = base + (i - (p.bulletCount - 1) / 2) * spread;
-      this.bullets.push(new Bullet(p.x + Math.cos(angle) * 20, p.y + Math.sin(angle) * 20, angle, p.damage, p.pierce));
+  clickedCard() {
+    for (let i = 0; i < 3; i++) {
+      const r = cardRect(i);
+      if (this.input.mouseX >= r.x && this.input.mouseX <= r.x + r.w && this.input.mouseY >= r.y && this.input.mouseY <= r.y + r.h) return i;
     }
-    this.shake.trigger(1.2);
-    sfx.shoot();
+    return -1;
   }
 
-  killWisp(w) {
-    w.dead = true;
-    this.combo += 1;
-    const gained = SCORE.perWisp + SCORE.comboStep * (this.combo - 1);
-    this.score += gained;
-    this.texts.add(w.x, w.y, `+${gained}`, '#ffe9b0');
-    this.particles.burst(w.x, w.y, '#7fd8ff', w.kind === 'brute' ? 26 : 14, 200);
-    this.shake.trigger(w.kind === 'brute' ? 5 : 2);
-    sfx.wispDies();
-  }
-
-  update(dt) {
+  step(dt) {
     this.time += dt;
-    if (this.bannerTimer > 0) this.bannerTimer -= dt;
-    this.particles.update(dt);
-    this.texts.update(dt);
-    this.shake.update(dt);
 
-    if (this.state === 'title') {
-      if (this.input.takeStart() || this.input.takeFire()) this.startRun();
-      return;
-    }
-    if (this.state === 'end') {
-      if (this.input.takeStart() || this.input.takeFire()) this.startRun();
-      return;
-    }
+    if (this.state === 'title') return;
+
     if (this.state === 'upgrade') {
-      const c = this.input.takeChoice();
-      if (c >= 0) this.pickUpgrade(c);
+      const c = this.input.consumeChoice();
+      if (c >= 0) this.pickOffer(c);
+      else if (this.input.consumeClick()) {
+        const i = this.clickedCard();
+        if (i >= 0) this.pickOffer(i);
+      }
+      this.effects.update(dt);
       return;
     }
 
-    // --- play ---
-    const aim = this.player.update(dt, this.input.moveAxis(), this.mouse, this.input.firing());
-    if (aim) this.shoot(aim);
-
-    for (const b of this.bullets) b.update(dt);
-    for (const w of this.wisps) w.update(dt, this.player);
-
-    // bullets vs wisps
-    for (const b of this.bullets) {
-      for (const w of this.wisps) {
-        if (w.dead || b.dead) continue;
-        if (Math.hypot(b.x - w.x, b.y - w.y) < b.r + w.r) {
-          w.hp -= b.damage;
-          this.particles.burst(b.x, b.y, '#c8f2ff', 5, 100, 0.25);
-          if (w.hp <= 0) this.killWisp(w);
-          if (b.pierce > 0) b.pierce -= 1;
-          else b.dead = true;
-        }
+    if (this.state === 'play') {
+      E.updatePlayer(this.player, this.input, dt, this.bullets, this.sound);
+      E.updateBullets(this.bullets, dt);
+      E.updateEnemies(this.enemies, dt, this.player);
+      E.bulletHits(this.bullets, this.enemies, this.effects, this.sound, this);
+      E.playerHits(this.enemies, this.player, this.effects, this.sound);
+      this.waves.update(dt, this.enemies);
+      if (this.combo.timer > 0) {
+        this.combo.timer -= dt;
+        if (this.combo.timer <= 0) { this.combo.count = 0; this.combo.mult = 1; }
       }
-    }
-    this.bullets = this.bullets.filter(b => !b.dead);
-    this.wisps = this.wisps.filter(w => !w.dead);
-
-    // wisps vs player
-    for (const w of this.wisps) {
-      if (Math.hypot(w.x - this.player.x, w.y - this.player.y) < w.r + this.player.radius()) {
-        if (this.player.hit()) {
-          this.combo = 0;
-          this.particles.burst(this.player.x, this.player.y, '#ff5b6a', 20, 220);
-          this.shake.trigger(10);
-          this.texts.add(this.player.x, this.player.y - 30, 'OUCH', '#ff5b6a');
-          sfx.playerHurt();
-          w.hp = 0;
-          w.dead = true;
-          if (this.player.hp <= 0) this.endRun();
-        }
+      this.effects.update(dt);
+      if (this.player.hp <= 0) {
+        this.state = 'end';
+        this.sound.gameover();
+      } else if (this.enemies.length === 0 && this.waves.state === 'done' && this.waves.pauseTimer <= 0) {
+        this.beginUpgradePick();
       }
+      return;
     }
-    this.wisps = this.wisps.filter(w => !w.dead);
 
-    this.director.update(dt);
+    if (this.state === 'end') {
+      E.updateBullets(this.bullets, dt);
+      this.effects.update(dt);
+    }
   }
 
-  endRun() {
-    this.state = 'end';
-    this.shake.trigger(16);
-    if (this.score > this.bestScore) {
-      this.bestScore = this.score;
-      localStorage.setItem('emberling-best', String(this.bestScore));
+  handleTransitions() {
+    if (this.state === 'title') {
+      if (this.input.consumeClick() || this.input.consumeKey()) this.startRun();
+    } else if (this.state === 'end') {
+      if (this.input.consumeClick() || this.input.consumeKey()) this.reset();
     }
-    sfx.gameOver();
+    if (this.input.keys.has('m')) {
+      this.input.keys.delete('m');
+      this.sound.toggleMute();
+    }
   }
 
-  get enemiesLeft() {
-    return this.wisps.length + this.director.spawnQueue.length;
+  hoverIdx() {
+    return this.state === 'upgrade' ? this.clickedCard() : -1;
+  }
+
+  draw() {
+    const ctx = this.ctx;
+    const t = this.time;
+    R.drawArena(ctx, t);
+    if (this.state === 'title') {
+      R.drawTitle(ctx, t);
+    } else if (this.state === 'upgrade') {
+      R.drawUpgrade(ctx, this.offers, t, this.hoverIdx());
+      this.effects.draw(ctx);
+    } else if (this.state === 'end') {
+      R.drawEnd(ctx, this, t);
+      this.effects.draw(ctx);
+    } else {
+      R.drawEnemies(ctx, this.enemies, t);
+      R.drawBullets(ctx, this.bullets);
+      R.drawPlayer(ctx, this.player, t);
+      this.effects.draw(ctx);
+      R.drawHud(ctx, this);
+    }
+  }
+
+  loop() {
+    if (!this.shotMode) {
+      this.handleTransitions();
+      this.step(1 / 60);
+    }
+    this.draw();
+    requestAnimationFrame(this._loop);
   }
 }

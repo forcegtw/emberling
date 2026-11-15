@@ -1,51 +1,70 @@
-// Emberling — wave director: spawns wisps, tracks progress, and opens upgrade choices.
+// Wave spawning and pacing. Deterministic when given a seeded rng.
+import { CONFIG } from './config.js';
+import { spawnEnemy } from './entities.js';
 
-import { WAVE, ARENA } from './config.js';
-import { Wisp } from './entities.js';
-
-export class WaveDirector {
-  constructor(game) {
-    this.game = game;
-    this.spawnQueue = [];
+export class Waves {
+  constructor(rng) {
+    this.rng = rng;
+    this.wave = 0;
+    this.state = 'idle';        // idle | spawning | fighting | done
+    this.pending = [];
     this.spawnTimer = 0;
+    this.spawnGap = CONFIG.waves.spawnGap;
+    this.pauseTimer = 0;
   }
 
-  beginWave(n) {
-    this.game.wave = n;
-    const total = WAVE.baseEnemies + WAVE.growth * (n - 1);
-    this.spawnQueue = [];
-    for (let i = 0; i < total; i++) {
-      const roll = Math.random();
-      const kind = n >= 3 && roll < 0.2 ? 'brute' : n >= 2 && roll < 0.45 ? 'dart' : 'drifter';
-      this.spawnQueue.push(kind);
-    }
-    this.spawnTimer = 0.5;
+  startNext() {
+    this.wave++;
+    const budget = Math.round(CONFIG.waves.firstBudget * Math.pow(CONFIG.waves.budgetGrowth, this.wave - 1));
+    this.spawnGap = Math.max(CONFIG.waves.spawnGapMin, CONFIG.waves.spawnGap - this.wave * 0.035);
+    this.pending = buildQueue(this.rng, this.wave, budget);
+    this.state = 'spawning';
+    this.spawnTimer = 0;
+    return budget;
   }
 
-  update(dt) {
-    const g = this.game;
-    if (this.spawnQueue.length > 0) {
+  update(dt, enemies, onWaveCleared) {
+    if (this.state === 'spawning') {
       this.spawnTimer -= dt;
-      if (this.spawnTimer <= 0) {
-        this.spawnTimer = WAVE.spawnInterval;
-        const kind = this.spawnQueue.pop();
-        g.wisps.push(this.spawnAtEdge(kind));
+      while (this.spawnTimer <= 0 && this.pending.length > 0) {
+        const kind = this.pending.pop();
+        enemies.push(spawnEnemy(this.rng, kind, this.wave, scaleFor(this.wave)));
+        this.spawnTimer += this.spawnGap;
       }
-    } else if (g.wisps.length === 0 && g.state === 'play') {
-      g.completeWave();
+      if (this.pending.length === 0) this.state = 'fighting';
+    } else if (this.state === 'fighting' && enemies.length === 0) {
+      this.state = 'done';
+      this.pauseTimer = CONFIG.waves.betweenWavePause;
+      if (onWaveCleared) onWaveCleared(this.wave);
+    } else if (this.state === 'done') {
+      this.pauseTimer -= dt;
+      if (this.pauseTimer <= 0) this.startNext();
     }
   }
 
-  // Wisps enter from a random edge point outside the arena, then walk in.
-  spawnAtEdge(kind) {
-    const side = Math.floor(Math.random() * 4);
-    let x, y;
-    if (side === 0) { x = ARENA.pad + Math.random() * (ARENA.w - ARENA.pad * 2); y = -30; }
-    else if (side === 1) { x = ARENA.w + 30; y = ARENA.pad + Math.random() * (ARENA.h - ARENA.pad * 2); }
-    else if (side === 2) { x = ARENA.pad + Math.random() * (ARENA.w - ARENA.pad * 2); y = ARENA.h + 30; }
-    else { x = -30; y = ARENA.pad + Math.random() * (ARENA.h - ARENA.pad * 2); }
-    const w = new Wisp(x, y, this.game.wave, kind);
-    w.inside = false;
-    return w;
+  // true when the wave cleared and the upgrade pick should be offered
+  clearedThisFrame(prevEnemiesLen, enemiesLen) {
+    return this.state === 'done' && prevEnemiesLen > 0 && enemiesLen === 0 && this.pauseTimer >= CONFIG.waves.betweenWavePause - 0.02;
   }
+}
+
+export function scaleFor(wave) {
+  return {
+    hp: 1 + (wave - 1) * 0.22,
+    speed: 1 + (wave - 1) * 0.045,
+  };
+}
+
+function buildQueue(rng, wave, budget) {
+  // Wisp costs 1, shard 2, brute 5. Brutes join from wave 3, shards from wave 2.
+  const picks = [];
+  let left = budget;
+  const canBrute = wave >= 3, canShard = wave >= 2;
+  while (left > 0) {
+    const roll = rng();
+    if (canBrute && roll < 0.14 && left >= 5) { picks.push('brute'); left -= 5; }
+    else if (canShard && roll < 0.48 && left >= 2) { picks.push('shard'); left -= 2; }
+    else { picks.push('wisp'); left -= 1; }
+  }
+  return picks;
 }
